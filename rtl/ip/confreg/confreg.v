@@ -38,6 +38,7 @@ THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 `define SIMU_FLAG_ADDR      16'hf500 //1f20_f500 
 
 module confreg #(
+    parameter   ID_WIDTH=6,
     parameter   SIMULATION=1'b0
 )
 (
@@ -47,7 +48,7 @@ module confreg #(
     input           cpu_clk,
     input           cpu_resetn,
 
-    input  [4 :0]   s_awid,
+    input  [ID_WIDTH-1:0] s_awid,
     input  [31:0]   s_awaddr,
     input  [7 :0]   s_awlen,
     input  [2 :0]   s_awsize,
@@ -57,17 +58,17 @@ module confreg #(
     input  [2 :0]   s_awprot,
     input           s_awvalid,
     output          s_awready,
-    input  [4 :0]   s_wid,
+    input  [ID_WIDTH-1:0] s_wid,
     input  [31:0]   s_wdata,
     input  [3 :0]   s_wstrb,
     input           s_wlast,
     input           s_wvalid,
     output reg      s_wready,
-    output [4 :0]   s_bid,
+    output [ID_WIDTH-1:0] s_bid,
     output [1 :0]   s_bresp,
     output reg      s_bvalid,
     input           s_bready,
-    input  [4 :0]   s_arid,
+    input  [ID_WIDTH-1:0] s_arid,
     input  [31:0]   s_araddr,
     input  [7 :0]   s_arlen,
     input  [2 :0]   s_arsize,
@@ -77,7 +78,7 @@ module confreg #(
     input  [2 :0]   s_arprot,
     input           s_arvalid,
     output          s_arready,
-    output [4 :0]   s_rid,
+    output [ID_WIDTH-1:0] s_rid,
     output reg [31:0]   s_rdata,
     output [1 :0]   s_rresp,
     output reg      s_rlast,
@@ -87,20 +88,24 @@ module confreg #(
     output     [15:0] led,
     output      [7:0] dpy0,
     output      [7:0] dpy1,
-    input      [31:0] switch,
-    input      [3 :0] touch_btn,
-    input             dma_finish,
-    input             fft_finish,
-    output            confreg_int
+    input      [31:0] switch,//波码开关输入
+    input      [3 :0] touch_btn,//按键输入
+    input             dma_finish,//DMA完成中断
+    input             fft_finish,//FFT完成中断（预留）
+    output            confreg_int//输出给CPU的中断信号
 );
 
 wire [3:0] touch_btn_data;//按键中断信号，上升沿触发
+reg  [3:0] touch_btn_ff0;
+reg  [3:0] touch_btn_ff1;
 reg  [31:0] led_data;
 wire [31:0] switch_data;
 reg  [31:0] simu_flag;
 
 reg [31:0] confreg_int_en,confreg_int_edge,confreg_int_pol,confreg_int_clr,confreg_int_set;
 wire [31:0] confreg_int_state;
+reg  [31:0] confreg_int_pending;
+reg  [31:0] confreg_raw_d;
 
 reg [31:0] sys_timer,sys_timer_cmp;
 reg sys_timer_en;
@@ -126,7 +131,7 @@ always@(posedge aclk)
     else if(ar_enter|aw_enter) busy <= 1'b1;
     else if(r_retire|b_retire) busy <= 1'b0;
 
-reg [4 :0] buf_id;
+reg [ID_WIDTH-1:0] buf_id;
 reg [31:0] buf_addr;
 reg [7 :0] buf_len;
 reg [2 :0] buf_size;
@@ -215,7 +220,18 @@ assign s_rresp = 2'b0;
 
 
 //-------------------------------{touch_btn}begin----------------------------//
-assign touch_btn_data = touch_btn;
+always @(posedge aclk or negedge aresetn) begin
+    if(!aresetn) begin
+        touch_btn_ff0 <= 4'b0;
+        touch_btn_ff1 <= 4'b0;
+    end
+    else begin
+        touch_btn_ff0 <= touch_btn;
+        touch_btn_ff1 <= touch_btn_ff0;
+    end
+end
+
+assign touch_btn_data = touch_btn_ff1;
 
     // genvar i;
     // generate for(i=0;i<4;i=i+1) begin: generate_btn_debounce
@@ -350,7 +366,63 @@ end
 //---------------------------{simulation flag}end------------------------//
 
 //-------------------------------{int_ctrl}begin----------------------------//
-//add your code
+wire write_confreg_int_en   = w_enter & (buf_addr[15:0] == (`CONFREG_INT_ADDR + 16'h0));
+wire write_confreg_int_edge = w_enter & (buf_addr[15:0] == (`CONFREG_INT_ADDR + 16'h4));
+wire write_confreg_int_pol  = w_enter & (buf_addr[15:0] == (`CONFREG_INT_ADDR + 16'h8));
+wire write_confreg_int_clr  = w_enter & (buf_addr[15:0] == (`CONFREG_INT_ADDR + 16'hc));
+wire write_confreg_int_set  = w_enter & (buf_addr[15:0] == (`CONFREG_INT_ADDR + 16'h10));
+
+wire [31:0] confreg_raw_int = {27'b0, timer_int, touch_btn_data};//暂时不加dma和fft
+wire [31:0] confreg_int_mask = 32'h0000_001f;
+
+wire [31:0] confreg_level_state = (~confreg_int_edge) &
+                                  ((( confreg_raw_int &  confreg_int_pol) |
+                                    ((~confreg_raw_int) & (~confreg_int_pol))) &
+                                   confreg_int_mask);//判断是否水平触发
+
+wire [31:0] confreg_edge_state  = confreg_int_edge &
+                                  ((((~confreg_raw_d) & confreg_raw_int &  confreg_int_pol) |
+                                    ( confreg_raw_d  & (~confreg_raw_int) & (~confreg_int_pol))) &
+                                   confreg_int_mask);//判断是否边沿触发
+
+wire [31:0] confreg_set_mask = write_confreg_int_set ? (s_wdata & confreg_int_edge & confreg_int_mask) : 32'h0;
+wire [31:0] confreg_clr_mask = write_confreg_int_clr ? (s_wdata & confreg_int_edge & confreg_int_mask) : 32'h0;
+
+always @(posedge aclk) begin
+    if(~aresetn) begin
+        confreg_int_en      <= 32'h0;
+        confreg_int_edge    <= 32'h0;
+        confreg_int_pol     <= 32'h0;
+        confreg_int_clr     <= 32'h0;
+        confreg_int_set     <= 32'h0;
+        confreg_int_pending <= 32'h0;
+        confreg_raw_d       <= 32'h0;
+    end
+    else begin
+        confreg_raw_d <= confreg_raw_int;
+
+        if(write_confreg_int_en) begin
+            confreg_int_en <= s_wdata;
+        end
+        if(write_confreg_int_edge) begin
+            confreg_int_edge <= s_wdata;
+        end
+        if(write_confreg_int_pol) begin
+            confreg_int_pol <= s_wdata;
+        end
+        if(write_confreg_int_clr) begin
+            confreg_int_clr <= s_wdata;
+        end
+        if(write_confreg_int_set) begin
+            confreg_int_set <= s_wdata;
+        end
+
+        confreg_int_pending <= (confreg_int_pending | confreg_edge_state | confreg_set_mask) & (~confreg_clr_mask);
+    end
+end
+
+assign confreg_int_state = confreg_int_pending | confreg_level_state;
+assign confreg_int = |(confreg_int_state & confreg_int_en);
 
 //--------------------------------{int_ctrl}end-----------------------------//
 
