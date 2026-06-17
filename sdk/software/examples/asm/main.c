@@ -1,8 +1,6 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#include "matmul_tpu_program.h"
-
 unsigned long UART_BASE = 0xbf000000;
 unsigned long CONFREG_TIMER_BASE = 0xbf20f100;
 unsigned long CONFREG_CLOCKS_PER_SEC = 50000000L;
@@ -21,6 +19,27 @@ unsigned long CORE_CLOCKS_PER_SEC = 33000000L;
 #define MATMUL_SRC_BASE      0x1c400000u
 #define MATMUL_RESULT_BASE   (MATMUL_SRC_BASE + (MATMUL_GROUP_NUM * 128u))
 #define MATMUL_RESULT_BYTES  (MATMUL_GROUP_NUM * 192u)
+
+#define MATMUL_TPU_START_PC      0x1c00b000u
+#define MATMUL_TPU_PROGRAM_WORDS 5u
+
+#define TPU_OP_SET_SRC_BASE 0x1u
+#define TPU_OP_SET_DST_BASE 0x2u
+#define TPU_OP_SET_GROUPS   0x3u
+#define TPU_OP_RUN          0x4u
+#define TPU_OP_END          0xfu
+
+#define TPU_PROGRAM_WORD(op, payload) \
+    ((((uint32_t)(op) & 0xfu) << 28) | ((uint32_t)(payload) & 0x0fffffffu))
+
+static const uint32_t matmul_tpu_program[MATMUL_TPU_PROGRAM_WORDS]
+    __attribute__((section(".tpu_program"), used, aligned(16))) = {
+    TPU_PROGRAM_WORD(TPU_OP_SET_SRC_BASE, MATMUL_SRC_BASE),
+    TPU_PROGRAM_WORD(TPU_OP_SET_DST_BASE, MATMUL_RESULT_BASE),
+    TPU_PROGRAM_WORD(TPU_OP_SET_GROUPS, MATMUL_GROUP_NUM),
+    TPU_PROGRAM_WORD(TPU_OP_RUN, 0u),
+    TPU_PROGRAM_WORD(TPU_OP_END, 0u),
+};
 
 #define TPU_STATUS_BUSY      (1u << 0)
 #define TPU_STATUS_DONE      (1u << 1)
