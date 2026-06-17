@@ -1,4 +1,3 @@
-/* verilator lint_off UNUSEDSIGNAL */
 module flash_axil_wrap
 (
     input           aclk,

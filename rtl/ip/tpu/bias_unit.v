@@ -1,4 +1,3 @@
-/* verilator lint_off UNUSEDPARAM */
 module bias_unit#(
     parameter WIDTH = 16,
     parameter F_BITS = 8
@@ -52,4 +51,3 @@ module bias_unit#(
         end
     end
 endmodule
-/* verilator lint_on UNUSEDPARAM */

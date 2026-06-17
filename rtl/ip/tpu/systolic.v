@@ -17,7 +17,6 @@ module systolic #(
     input   [SYSTOLIC_ARRAY_WIDTH-1:0]       weight_valid_col,
     input   switch_in,
 
-    /* verilator lint_off UNUSEDSIGNAL */
     /* verilator lint_off PINCONNECTEMPTY */
     input   [15:0]  col_num,
     input   col_num_valid,
@@ -142,6 +141,5 @@ module systolic #(
             z_valid_out[out_i] = input_valid_link[active_row_idx][out_i];
         end
     end
-/* verilator lint_on UNUSEDSIGNAL */
 /* verilator lint_on PINCONNECTEMPTY */
 endmodule
