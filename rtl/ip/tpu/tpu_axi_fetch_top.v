@@ -169,66 +169,83 @@ module tpu_axi_fetch_top #(
     wire [31:0] bg_src_read_addr = bg_read_base + {24'd0, bg_read_index, 2'b00};
     wire [3:0] bg_target_index = bg_read_index[3:0];
 
-    function [65:0] dot4_u32;
-        input [31:0] a0;
-        input [31:0] a1;
-        input [31:0] a2;
-        input [31:0] a3;
-        input [31:0] b0;
-        input [31:0] b1;
-        input [31:0] b2;
-        input [31:0] b3;
-        reg [63:0] p0;
-        reg [63:0] p1;
-        reg [63:0] p2;
-        reg [63:0] p3;
-        begin
-            p0 = {32'd0, a0} * {32'd0, b0};
-            p1 = {32'd0, a1} * {32'd0, b1};
-            p2 = {32'd0, a2} * {32'd0, b2};
-            p3 = {32'd0, a3} * {32'd0, b3};
-            dot4_u32 =
-                {2'd0, p0} +
-                {2'd0, p1} +
-                {2'd0, p2} +
-                {2'd0, p3};
-        end
-    endfunction
-
     wire [3:0] compute_row_base = {row_idx, 2'b00};
     wire [31:0] a_cur0 = compute_buf_sel ? a_mem1[compute_row_base + 4'd0] : a_mem0[compute_row_base + 4'd0];
     wire [31:0] a_cur1 = compute_buf_sel ? a_mem1[compute_row_base + 4'd1] : a_mem0[compute_row_base + 4'd1];
     wire [31:0] a_cur2 = compute_buf_sel ? a_mem1[compute_row_base + 4'd2] : a_mem0[compute_row_base + 4'd2];
     wire [31:0] a_cur3 = compute_buf_sel ? a_mem1[compute_row_base + 4'd3] : a_mem0[compute_row_base + 4'd3];
 
-    wire [65:0] row_next_col0 = dot4_u32(
-        a_cur0, a_cur1, a_cur2, a_cur3,
-        compute_buf_sel ? b_mem1[4'd0]  : b_mem0[4'd0],
-        compute_buf_sel ? b_mem1[4'd4]  : b_mem0[4'd4],
-        compute_buf_sel ? b_mem1[4'd8]  : b_mem0[4'd8],
-        compute_buf_sel ? b_mem1[4'd12] : b_mem0[4'd12]
-    );
-    wire [65:0] row_next_col1 = dot4_u32(
-        a_cur0, a_cur1, a_cur2, a_cur3,
-        compute_buf_sel ? b_mem1[4'd1]  : b_mem0[4'd1],
-        compute_buf_sel ? b_mem1[4'd5]  : b_mem0[4'd5],
-        compute_buf_sel ? b_mem1[4'd9]  : b_mem0[4'd9],
-        compute_buf_sel ? b_mem1[4'd13] : b_mem0[4'd13]
-    );
-    wire [65:0] row_next_col2 = dot4_u32(
-        a_cur0, a_cur1, a_cur2, a_cur3,
-        compute_buf_sel ? b_mem1[4'd2]  : b_mem0[4'd2],
-        compute_buf_sel ? b_mem1[4'd6]  : b_mem0[4'd6],
-        compute_buf_sel ? b_mem1[4'd10] : b_mem0[4'd10],
-        compute_buf_sel ? b_mem1[4'd14] : b_mem0[4'd14]
-    );
-    wire [65:0] row_next_col3 = dot4_u32(
-        a_cur0, a_cur1, a_cur2, a_cur3,
-        compute_buf_sel ? b_mem1[4'd3]  : b_mem0[4'd3],
-        compute_buf_sel ? b_mem1[4'd7]  : b_mem0[4'd7],
-        compute_buf_sel ? b_mem1[4'd11] : b_mem0[4'd11],
-        compute_buf_sel ? b_mem1[4'd15] : b_mem0[4'd15]
-    );
+    wire [31:0] b_col0_0 = compute_buf_sel ? b_mem1[4'd0]  : b_mem0[4'd0];
+    wire [31:0] b_col0_1 = compute_buf_sel ? b_mem1[4'd4]  : b_mem0[4'd4];
+    wire [31:0] b_col0_2 = compute_buf_sel ? b_mem1[4'd8]  : b_mem0[4'd8];
+    wire [31:0] b_col0_3 = compute_buf_sel ? b_mem1[4'd12] : b_mem0[4'd12];
+    wire [31:0] b_col1_0 = compute_buf_sel ? b_mem1[4'd1]  : b_mem0[4'd1];
+    wire [31:0] b_col1_1 = compute_buf_sel ? b_mem1[4'd5]  : b_mem0[4'd5];
+    wire [31:0] b_col1_2 = compute_buf_sel ? b_mem1[4'd9]  : b_mem0[4'd9];
+    wire [31:0] b_col1_3 = compute_buf_sel ? b_mem1[4'd13] : b_mem0[4'd13];
+    wire [31:0] b_col2_0 = compute_buf_sel ? b_mem1[4'd2]  : b_mem0[4'd2];
+    wire [31:0] b_col2_1 = compute_buf_sel ? b_mem1[4'd6]  : b_mem0[4'd6];
+    wire [31:0] b_col2_2 = compute_buf_sel ? b_mem1[4'd10] : b_mem0[4'd10];
+    wire [31:0] b_col2_3 = compute_buf_sel ? b_mem1[4'd14] : b_mem0[4'd14];
+    wire [31:0] b_col3_0 = compute_buf_sel ? b_mem1[4'd3]  : b_mem0[4'd3];
+    wire [31:0] b_col3_1 = compute_buf_sel ? b_mem1[4'd7]  : b_mem0[4'd7];
+    wire [31:0] b_col3_2 = compute_buf_sel ? b_mem1[4'd11] : b_mem0[4'd11];
+    wire [31:0] b_col3_3 = compute_buf_sel ? b_mem1[4'd15] : b_mem0[4'd15];
+
+    wire [63:0] p_col0_0;
+    wire [63:0] p_col0_1;
+    wire [63:0] p_col0_2;
+    wire [63:0] p_col0_3;
+    wire [63:0] p_col1_0;
+    wire [63:0] p_col1_1;
+    wire [63:0] p_col1_2;
+    wire [63:0] p_col1_3;
+    wire [63:0] p_col2_0;
+    wire [63:0] p_col2_1;
+    wire [63:0] p_col2_2;
+    wire [63:0] p_col2_3;
+    wire [63:0] p_col3_0;
+    wire [63:0] p_col3_1;
+    wire [63:0] p_col3_2;
+    wire [63:0] p_col3_3;
+
+    mul_lut_u32 u_mul_col0_0 (.a(a_cur0), .b(b_col0_0), .y(p_col0_0));
+    mul_lut_u32 u_mul_col0_1 (.a(a_cur1), .b(b_col0_1), .y(p_col0_1));
+    mul_lut_u32 u_mul_col0_2 (.a(a_cur2), .b(b_col0_2), .y(p_col0_2));
+    mul_lut_u32 u_mul_col0_3 (.a(a_cur3), .b(b_col0_3), .y(p_col0_3));
+    mul_lut_u32 u_mul_col1_0 (.a(a_cur0), .b(b_col1_0), .y(p_col1_0));
+    mul_lut_u32 u_mul_col1_1 (.a(a_cur1), .b(b_col1_1), .y(p_col1_1));
+    mul_lut_u32 u_mul_col1_2 (.a(a_cur2), .b(b_col1_2), .y(p_col1_2));
+    mul_lut_u32 u_mul_col1_3 (.a(a_cur3), .b(b_col1_3), .y(p_col1_3));
+    mul_lut_u32 u_mul_col2_0 (.a(a_cur0), .b(b_col2_0), .y(p_col2_0));
+    mul_lut_u32 u_mul_col2_1 (.a(a_cur1), .b(b_col2_1), .y(p_col2_1));
+    mul_lut_u32 u_mul_col2_2 (.a(a_cur2), .b(b_col2_2), .y(p_col2_2));
+    mul_lut_u32 u_mul_col2_3 (.a(a_cur3), .b(b_col2_3), .y(p_col2_3));
+    mul_lut_u32 u_mul_col3_0 (.a(a_cur0), .b(b_col3_0), .y(p_col3_0));
+    mul_lut_u32 u_mul_col3_1 (.a(a_cur1), .b(b_col3_1), .y(p_col3_1));
+    mul_lut_u32 u_mul_col3_2 (.a(a_cur2), .b(b_col3_2), .y(p_col3_2));
+    mul_lut_u32 u_mul_col3_3 (.a(a_cur3), .b(b_col3_3), .y(p_col3_3));
+
+    wire [65:0] row_next_col0 =
+        {2'd0, p_col0_0} +
+        {2'd0, p_col0_1} +
+        {2'd0, p_col0_2} +
+        {2'd0, p_col0_3};
+    wire [65:0] row_next_col1 =
+        {2'd0, p_col1_0} +
+        {2'd0, p_col1_1} +
+        {2'd0, p_col1_2} +
+        {2'd0, p_col1_3};
+    wire [65:0] row_next_col2 =
+        {2'd0, p_col2_0} +
+        {2'd0, p_col2_1} +
+        {2'd0, p_col2_2} +
+        {2'd0, p_col2_3};
+    wire [65:0] row_next_col3 =
+        {2'd0, p_col3_0} +
+        {2'd0, p_col3_1} +
+        {2'd0, p_col3_2} +
+        {2'd0, p_col3_3};
 
     function [31:0] select_c_word;
         input [65:0] value;
@@ -875,3 +892,18 @@ module tpu_axi_fetch_top #(
     end
 
 endmodule
+
+/* verilator lint_off DECLFILENAME */
+(* keep_hierarchy = "yes", use_dsp = "no" *)
+module mul_lut_u32 (
+    input  wire [31:0] a,
+    input  wire [31:0] b,
+    output wire [63:0] y
+);
+
+    (* use_dsp = "no" *) wire [63:0] y_lut = {32'd0, a} * {32'd0, b};
+
+    assign y = y_lut;
+
+endmodule
+/* verilator lint_on DECLFILENAME */
