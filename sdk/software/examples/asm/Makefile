@@ -17,6 +17,11 @@ SEMIHOST_LIB =
 
 include ../../bsp/common.mk
 
+LDFLAGS := $(filter-out -T,$(LDFLAGS))
+LDFLAGS := $(filter-out ../../bsp/env/script.lds ../../bsp/env/separate.lds ./matmul_tpu.lds,$(LDFLAGS))
+LDFLAGS += -T ./matmul_tpu.lds
+LINK_DEPS += ./matmul_tpu.lds
+
 .PHONY: image-check
 all: image-check
 
