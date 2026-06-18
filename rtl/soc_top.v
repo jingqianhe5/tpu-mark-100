@@ -124,7 +124,6 @@ else begin: pll_clk
     clk_pll u_clk_pll(
         .cpu_clk    (cpu_clk),
         .sys_clk    (sys_clk),
-        .clk_out3   (),
         .resetn     (~reset),
         .locked     (pll_locked),
         .clk_in1    (clk)
@@ -214,6 +213,17 @@ wire        confreg_int;
 wire        uart0_int;
 wire        confreg_dma_finish;
 wire        confreg_fft_finish;
+wire        tpu_busy;
+wire        tpu_done;
+wire        tpu_error;
+wire [8*16-1:0] tpu_infer_result_data;
+wire [7:0]      tpu_infer_result_valid;
+wire            lacc_tpu_start;
+wire [31:0]     lacc_tpu_start_pc;
+wire            lacc_tpu_cmd_valid;
+wire            lacc_tpu_cmd_ready;
+wire [1:0]      lacc_tpu_cmd_op;
+wire [31:0]     lacc_tpu_cmd_payload;
 //-----------------------------------------------------
 assign intrpt      = {6'd0, uart0_int, confreg_int};
 assign cpu_break_point = 1'b0;
@@ -588,24 +598,13 @@ wire [ 3:0] tpu_sys_axi_bid;    wire [ 1:0] tpu_sys_axi_bresp; wire        tpu_s
 wire [31:0] tpu_sys_axi_araddr; wire [ 3:0] tpu_sys_axi_arid; wire [ 7:0] tpu_sys_axi_arlen; wire [ 2:0] tpu_sys_axi_arsize; wire [ 1:0] tpu_sys_axi_arburst; wire [ 0:0] tpu_sys_axi_arlock; wire [ 3:0] tpu_sys_axi_arcache; wire [ 2:0] tpu_sys_axi_arprot; wire tpu_sys_axi_arvalid; wire tpu_sys_axi_arready;
 wire [31:0] tpu_sys_axi_rdata;  wire [ 3:0] tpu_sys_axi_rid;  wire [ 1:0] tpu_sys_axi_rresp; wire        tpu_sys_axi_rlast;  wire        tpu_sys_axi_rvalid; wire        tpu_sys_axi_rready;
 
-wire        tpu_busy;
-wire        tpu_done;
-wire        tpu_error;
 wire        tpu_busy_tpu;
 wire        tpu_done_tpu;
 wire        tpu_error_tpu;
 wire [31:0] tpu_pc_current;
 wire [31:0] tpu_last_ins;
-wire [8*16-1:0] tpu_infer_result_data;
-wire [7:0]      tpu_infer_result_valid;
 wire [8*16-1:0] tpu_infer_result_data_tpu;
 wire [7:0]      tpu_infer_result_valid_tpu;
-wire            lacc_tpu_start;
-wire [31:0]     lacc_tpu_start_pc;
-wire            lacc_tpu_cmd_valid;
-wire            lacc_tpu_cmd_ready;
-wire [1:0]      lacc_tpu_cmd_op;
-wire [31:0]     lacc_tpu_cmd_payload;
 wire            tpu_start_final;
 wire [31:0]     tpu_start_pc_final;
 wire            tpu_lacc_cmd_fifo_full;
