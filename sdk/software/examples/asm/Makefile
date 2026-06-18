@@ -16,3 +16,18 @@ LINKER_SCRIPT = ./matmul_tpu.lds
 SEMIHOST_LIB =
 
 include ../../bsp/common.mk
+
+.PHONY: image-check
+all: image-check
+
+image-check: $(TARGET)
+	@size=$$(wc -c < $(OBJDIR)/$(TARGET).bin); \
+	if [ "$$size" -lt 45076 ]; then \
+		echo "ERROR: $(OBJDIR)/$(TARGET).bin is too small ($$size bytes); TPU program was not emitted to 0x1c00b000"; \
+		exit 1; \
+	fi; \
+	bytes=$$(od -An -tx1 -j 45056 -N 20 $(OBJDIR)/$(TARGET).bin | tr -d ' \n'); \
+	if [ "$$bytes" != "0000401c00c4492c8813003000000040000000f0" ]; then \
+		echo "ERROR: unexpected TPU program bytes at file offset 0xb000: $$bytes"; \
+		exit 1; \
+	fi

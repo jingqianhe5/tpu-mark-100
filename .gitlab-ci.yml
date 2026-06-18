@@ -21,7 +21,7 @@ bitstream:
     - echo "Preparing build env..."
     - cp -r /opt/env/regional_env/ciciec2026_loongson_regional .
     - cp -rfT rtl/ ciciec2026_loongson_regional/rtl
-    - cp -rf sdk/. ciciec2026_loongson_regional/sdk/
+    - cp -rfT sdk/ ciciec2026_loongson_regional/sdk
     - make MATMUL_GROUP_NUM=5000 COPY_OUTPUT=0 -C ciciec2026_loongson_regional/sdk/software/examples/asm
     - find rtl -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}' > rtl.sha256
     - |

@@ -116,7 +116,7 @@ SECTIONS
   .tpu_program 0x1c00b000 : AT(0x1c00b000)
   {
     . = ALIGN(16);
-    KEEP(*(.tpu_program))
+    KEEP(*(.tpu_program .tpu_program.*))
   } >isram
 
   . = ALIGN(16);
