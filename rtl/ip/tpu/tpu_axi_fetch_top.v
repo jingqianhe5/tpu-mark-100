@@ -83,8 +83,7 @@ module tpu_axi_fetch_top #(
         ST_GROUP_NEXT     = 6'd13,
         ST_REPORT_RESULT  = 6'd14,
         ST_HALT           = 6'd15,
-        ST_PREFETCH_WAIT  = 6'd16,
-        ST_PREFETCH_DRAIN = 6'd17;
+        ST_PREFETCH_WAIT  = 6'd16;
 
     localparam [1:0]
         BG_READ_IDLE = 2'd0,
@@ -119,13 +118,17 @@ module tpu_axi_fetch_top #(
     reg [31:0] a_mem1 [0:15];
     reg [31:0] b_mem1 [0:15];
     reg [65:0] c_mem [0:15];
+    reg [1:0]  mul_phase;
+    reg [65:0] row_acc0;
+    reg [65:0] row_acc1;
+    reg [65:0] row_acc2;
+    reg [65:0] row_acc3;
 
     reg [31:0] crc32_reg;
     reg [31:0] final_crc32_reg;
     reg [127:0] infer_result_data_reg;
     reg [SYSTOLIC_ARRAY_WIDTH-1:0] infer_result_valid_reg;
     reg [2:0] report_wait_count;
-    reg [2:0] drain_idle_count;
 `ifdef SIMULATION
     reg trace_matmul_row;
     reg trace_matmul_write;
@@ -165,6 +168,8 @@ module tpu_axi_fetch_top #(
     wire [31:0] dst_write_addr = current_group_dst_base + {24'd0, write_index, 2'b00};
     wire read_burst_last = (read_index == 6'd31);
     wire write_burst_last = (write_index == 6'd47);
+    wire main_read_done = read_burst_last;
+    wire bg_read_done = (bg_read_index == 6'd31);
 
     wire [31:0] bg_src_read_addr = bg_read_base + {24'd0, bg_read_index, 2'b00};
     wire [3:0] bg_target_index = bg_read_index[3:0];
@@ -192,60 +197,46 @@ module tpu_axi_fetch_top #(
     wire [31:0] b_col3_2 = compute_buf_sel ? b_mem1[4'd11] : b_mem0[4'd11];
     wire [31:0] b_col3_3 = compute_buf_sel ? b_mem1[4'd15] : b_mem0[4'd15];
 
-    wire [63:0] p_col0_0;
-    wire [63:0] p_col0_1;
-    wire [63:0] p_col0_2;
-    wire [63:0] p_col0_3;
-    wire [63:0] p_col1_0;
-    wire [63:0] p_col1_1;
-    wire [63:0] p_col1_2;
-    wire [63:0] p_col1_3;
-    wire [63:0] p_col2_0;
-    wire [63:0] p_col2_1;
-    wire [63:0] p_col2_2;
-    wire [63:0] p_col2_3;
-    wire [63:0] p_col3_0;
-    wire [63:0] p_col3_1;
-    wire [63:0] p_col3_2;
-    wire [63:0] p_col3_3;
+    wire [31:0] mul_a_sel =
+        (mul_phase == 2'd0) ? a_cur0 :
+        (mul_phase == 2'd1) ? a_cur1 :
+        (mul_phase == 2'd2) ? a_cur2 : a_cur3;
+    wire [31:0] mul_b_col0_sel =
+        (mul_phase == 2'd0) ? b_col0_0 :
+        (mul_phase == 2'd1) ? b_col0_1 :
+        (mul_phase == 2'd2) ? b_col0_2 : b_col0_3;
+    wire [31:0] mul_b_col1_sel =
+        (mul_phase == 2'd0) ? b_col1_0 :
+        (mul_phase == 2'd1) ? b_col1_1 :
+        (mul_phase == 2'd2) ? b_col1_2 : b_col1_3;
+    wire [31:0] mul_b_col2_sel =
+        (mul_phase == 2'd0) ? b_col2_0 :
+        (mul_phase == 2'd1) ? b_col2_1 :
+        (mul_phase == 2'd2) ? b_col2_2 : b_col2_3;
+    wire [31:0] mul_b_col3_sel =
+        (mul_phase == 2'd0) ? b_col3_0 :
+        (mul_phase == 2'd1) ? b_col3_1 :
+        (mul_phase == 2'd2) ? b_col3_2 : b_col3_3;
 
-    mul_lut_u32 u_mul_col0_0 (.a(a_cur0), .b(b_col0_0), .y(p_col0_0));
-    mul_lut_u32 u_mul_col0_1 (.a(a_cur1), .b(b_col0_1), .y(p_col0_1));
-    mul_lut_u32 u_mul_col0_2 (.a(a_cur2), .b(b_col0_2), .y(p_col0_2));
-    mul_lut_u32 u_mul_col0_3 (.a(a_cur3), .b(b_col0_3), .y(p_col0_3));
-    mul_lut_u32 u_mul_col1_0 (.a(a_cur0), .b(b_col1_0), .y(p_col1_0));
-    mul_lut_u32 u_mul_col1_1 (.a(a_cur1), .b(b_col1_1), .y(p_col1_1));
-    mul_lut_u32 u_mul_col1_2 (.a(a_cur2), .b(b_col1_2), .y(p_col1_2));
-    mul_lut_u32 u_mul_col1_3 (.a(a_cur3), .b(b_col1_3), .y(p_col1_3));
-    mul_lut_u32 u_mul_col2_0 (.a(a_cur0), .b(b_col2_0), .y(p_col2_0));
-    mul_lut_u32 u_mul_col2_1 (.a(a_cur1), .b(b_col2_1), .y(p_col2_1));
-    mul_lut_u32 u_mul_col2_2 (.a(a_cur2), .b(b_col2_2), .y(p_col2_2));
-    mul_lut_u32 u_mul_col2_3 (.a(a_cur3), .b(b_col2_3), .y(p_col2_3));
-    mul_lut_u32 u_mul_col3_0 (.a(a_cur0), .b(b_col3_0), .y(p_col3_0));
-    mul_lut_u32 u_mul_col3_1 (.a(a_cur1), .b(b_col3_1), .y(p_col3_1));
-    mul_lut_u32 u_mul_col3_2 (.a(a_cur2), .b(b_col3_2), .y(p_col3_2));
-    mul_lut_u32 u_mul_col3_3 (.a(a_cur3), .b(b_col3_3), .y(p_col3_3));
+    wire [63:0] mul_col0_prod;
+    wire [63:0] mul_col1_prod;
+    wire [63:0] mul_col2_prod;
+    wire [63:0] mul_col3_prod;
 
-    wire [65:0] row_next_col0 =
-        {2'd0, p_col0_0} +
-        {2'd0, p_col0_1} +
-        {2'd0, p_col0_2} +
-        {2'd0, p_col0_3};
-    wire [65:0] row_next_col1 =
-        {2'd0, p_col1_0} +
-        {2'd0, p_col1_1} +
-        {2'd0, p_col1_2} +
-        {2'd0, p_col1_3};
-    wire [65:0] row_next_col2 =
-        {2'd0, p_col2_0} +
-        {2'd0, p_col2_1} +
-        {2'd0, p_col2_2} +
-        {2'd0, p_col2_3};
-    wire [65:0] row_next_col3 =
-        {2'd0, p_col3_0} +
-        {2'd0, p_col3_1} +
-        {2'd0, p_col3_2} +
-        {2'd0, p_col3_3};
+    mul_lut_u32 u_mul_col0 (.a(mul_a_sel), .b(mul_b_col0_sel), .y(mul_col0_prod));
+    mul_lut_u32 u_mul_col1 (.a(mul_a_sel), .b(mul_b_col1_sel), .y(mul_col1_prod));
+    mul_lut_u32 u_mul_col2 (.a(mul_a_sel), .b(mul_b_col2_sel), .y(mul_col2_prod));
+    mul_lut_u32 u_mul_col3 (.a(mul_a_sel), .b(mul_b_col3_sel), .y(mul_col3_prod));
+
+    wire first_product = (mul_phase == 2'd0);
+    wire [65:0] mul_term0 = {2'd0, mul_col0_prod};
+    wire [65:0] mul_term1 = {2'd0, mul_col1_prod};
+    wire [65:0] mul_term2 = {2'd0, mul_col2_prod};
+    wire [65:0] mul_term3 = {2'd0, mul_col3_prod};
+    wire [65:0] row_next_col0 = first_product ? mul_term0 : (row_acc0 + mul_term0);
+    wire [65:0] row_next_col1 = first_product ? mul_term1 : (row_acc1 + mul_term1);
+    wire [65:0] row_next_col2 = first_product ? mul_term2 : (row_acc2 + mul_term2);
+    wire [65:0] row_next_col3 = first_product ? mul_term3 : (row_acc3 + mul_term3);
 
     function [31:0] select_c_word;
         input [65:0] value;
@@ -301,7 +292,106 @@ module tpu_axi_fetch_top #(
         end
     endfunction
 
-    wire prefetch_needed = (groups_left > 32'd1) && !prefetch_valid;
+    wire prefetch_needed = 1'b0;
+
+    task start_prefetch_read;
+        begin
+            if (prefetch_needed && (bg_read_state == BG_READ_IDLE)) begin
+                bg_read_state     <= BG_READ_AR;
+                bg_read_index     <= 6'd0;
+                bg_read_base      <= active_src_base + 32'd128;
+            end
+        end
+    endtask
+
+    task service_bg_read;
+        begin
+            if (bg_read_state == BG_READ_AR) begin
+                m_axi_araddr  <= bg_src_read_addr;
+                m_axi_arvalid <= 1'b1;
+                m_axi_rready  <= 1'b1;
+                if (m_axi_arvalid && m_axi_arready) begin
+                    m_axi_arvalid <= 1'b0;
+                    m_axi_rready  <= 1'b1;
+                    bg_read_state <= BG_READ_R;
+                end
+                if (m_axi_rvalid && m_axi_rready) begin
+                    if (m_axi_rresp != 2'b00) begin
+                        m_axi_rready <= 1'b0;
+                        error <= 1'b1;
+                        busy  <= 1'b0;
+                        done  <= 1'b1;
+                        state <= ST_HALT;
+                    end else begin
+                        if (bg_read_index < 6'd16) begin
+                            if (!prefetch_buf_sel) begin
+                                a_mem0[bg_target_index] <= m_axi_rdata;
+                            end else begin
+                                a_mem1[bg_target_index] <= m_axi_rdata;
+                            end
+                        end else begin
+                            if (!prefetch_buf_sel) begin
+                                b_mem0[bg_target_index] <= m_axi_rdata;
+                            end else begin
+                                b_mem1[bg_target_index] <= m_axi_rdata;
+                            end
+                        end
+                        if (bg_read_index == 6'd31) begin
+                            bg_read_state  <= BG_READ_IDLE;
+                            m_axi_rready   <= 1'b0;
+                            prefetch_valid <= 1'b1;
+                        end else begin
+                            m_axi_rready  <= 1'b1;
+                            bg_read_index <= bg_read_index + 6'd1;
+                        end
+                    end
+                end
+            end else if (bg_read_state == BG_READ_R) begin
+                m_axi_rready <= 1'b1;
+                if (m_axi_rvalid && m_axi_rready) begin
+                    if (m_axi_rresp != 2'b00) begin
+                        m_axi_rready <= 1'b0;
+                        error <= 1'b1;
+                        busy  <= 1'b0;
+                        done  <= 1'b1;
+                        state <= ST_HALT;
+                    end else begin
+                        if (bg_read_index < 6'd16) begin
+                            if (!prefetch_buf_sel) begin
+                                a_mem0[bg_target_index] <= m_axi_rdata;
+                            end else begin
+                                a_mem1[bg_target_index] <= m_axi_rdata;
+                            end
+                        end else begin
+                            if (!prefetch_buf_sel) begin
+                                b_mem0[bg_target_index] <= m_axi_rdata;
+                            end else begin
+                                b_mem1[bg_target_index] <= m_axi_rdata;
+                            end
+                        end
+                        if (bg_read_done) begin
+                            bg_read_state  <= BG_READ_IDLE;
+                            m_axi_rready   <= 1'b0;
+                            prefetch_valid <= 1'b1;
+                        end else begin
+                            m_axi_rready  <= 1'b1;
+                            if (bg_read_index != 6'd31) begin
+                                bg_read_index <= bg_read_index + 6'd1;
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    endtask
+
+    task drain_untracked_read;
+        begin
+            if ((bg_read_state == BG_READ_IDLE) && m_axi_rvalid) begin
+                m_axi_rready <= 1'b1;
+            end
+        end
+    endtask
 
 `ifdef SIMULATION
     initial begin
@@ -331,6 +421,11 @@ module tpu_axi_fetch_top #(
             write_index      <= 6'd0;
             compute_index    <= 5'd0;
             row_idx          <= 2'd0;
+            mul_phase        <= 2'd0;
+            row_acc0         <= 66'd0;
+            row_acc1         <= 66'd0;
+            row_acc2         <= 66'd0;
+            row_acc3         <= 66'd0;
             store_elem_index <= 4'd0;
             store_word_sel   <= 2'd0;
             compute_buf_sel  <= 1'b0;
@@ -344,7 +439,6 @@ module tpu_axi_fetch_top #(
             infer_result_data_reg  <= 128'd0;
             infer_result_valid_reg <= {SYSTOLIC_ARRAY_WIDTH{1'b0}};
             report_wait_count <= 3'd0;
-            drain_idle_count  <= 3'd0;
             m_axi_awaddr     <= 32'd0;
             m_axi_awvalid    <= 1'b0;
             m_axi_wdata      <= 32'd0;
@@ -397,10 +491,24 @@ module tpu_axi_fetch_top #(
                 ST_FETCH_AR: begin
                     m_axi_araddr  <= pc_current;
                     m_axi_arvalid <= 1'b1;
+                    m_axi_rready  <= 1'b1;
                     if (m_axi_arvalid && m_axi_arready) begin
                         m_axi_arvalid <= 1'b0;
                         m_axi_rready  <= 1'b1;
                         state         <= ST_FETCH_R;
+                    end
+                    if (m_axi_rvalid && m_axi_rready) begin
+                        m_axi_rready <= 1'b0;
+                        last_ins     <= m_axi_rdata;
+                        ins_reg      <= m_axi_rdata;
+                        if (m_axi_rresp != 2'b00) begin
+                            error <= 1'b1;
+                            busy  <= 1'b0;
+                            done  <= 1'b1;
+                            state <= ST_HALT;
+                        end else begin
+                            state <= ST_DECODE;
+                        end
                     end
                 end
 
@@ -469,6 +577,11 @@ module tpu_axi_fetch_top #(
                     write_index   <= 6'd0;
                     compute_index <= 5'd0;
                     row_idx       <= 2'd0;
+                    mul_phase     <= 2'd0;
+                    row_acc0      <= 66'd0;
+                    row_acc1      <= 66'd0;
+                    row_acc2      <= 66'd0;
+                    row_acc3      <= 66'd0;
                     store_elem_index <= 4'd0;
                     store_word_sel   <= 2'd0;
                     for (i = 0; i < 16; i = i + 1) begin
@@ -487,14 +600,12 @@ module tpu_axi_fetch_top #(
                 ST_READ_AR: begin
                     m_axi_araddr  <= src_read_addr;
                     m_axi_arvalid <= 1'b1;
+                    m_axi_rready  <= 1'b1;
                     if (m_axi_arvalid && m_axi_arready) begin
                         m_axi_arvalid <= 1'b0;
                         m_axi_rready  <= 1'b1;
                         state         <= ST_READ_R;
                     end
-                end
-
-                ST_READ_R: begin
                     if (m_axi_rvalid && m_axi_rready) begin
                         if (m_axi_rresp != 2'b00) begin
                             m_axi_rready <= 1'b0;
@@ -521,86 +632,84 @@ module tpu_axi_fetch_top #(
                                 state <= ST_COMPUTE_PREP;
                             end else begin
                                 m_axi_rready <= 1'b1;
-                                read_index <= read_index + 6'd1;
+                                if (read_index != 6'd31) begin
+                                    read_index <= read_index + 6'd1;
+                                end
+                            end
+                        end
+                    end
+                end
+
+                ST_READ_R: begin
+                    if (m_axi_rvalid && m_axi_rready) begin
+                        if (m_axi_rresp != 2'b00) begin
+                            m_axi_rready <= 1'b0;
+                            error <= 1'b1;
+                            busy  <= 1'b0;
+                            done  <= 1'b1;
+                            state <= ST_HALT;
+                        end else begin
+                            if (read_target_is_a) begin
+                                if (!compute_buf_sel) begin
+                                    a_mem0[read_target_index] <= m_axi_rdata;
+                                end else begin
+                                    a_mem1[read_target_index] <= m_axi_rdata;
+                                end
+                            end else begin
+                                if (!compute_buf_sel) begin
+                                    b_mem0[read_target_index] <= m_axi_rdata;
+                                end else begin
+                                    b_mem1[read_target_index] <= m_axi_rdata;
+                                end
+                            end
+                            if (main_read_done) begin
+                                m_axi_rready <= 1'b0;
+                                state <= ST_COMPUTE_PREP;
+                            end else begin
+                                m_axi_rready <= 1'b1;
+                                if (read_index != 6'd31) begin
+                                    read_index <= read_index + 6'd1;
+                                end
                             end
                         end
                     end
                 end
 
                 ST_COMPUTE_PREP: begin
-                    if (prefetch_needed && (bg_read_state == BG_READ_IDLE)) begin
-                        bg_read_state <= BG_READ_AR;
-                        bg_read_index <= 6'd0;
-                        bg_read_base  <= active_src_base + 32'd128;
+                    if (bg_read_state == BG_READ_IDLE) begin
+                        start_prefetch_read();
                     end
                     row_idx   <= compute_index[1:0];
+                    mul_phase <= 2'd0;
+                    row_acc0  <= 66'd0;
+                    row_acc1  <= 66'd0;
+                    row_acc2  <= 66'd0;
+                    row_acc3  <= 66'd0;
                     state     <= ST_COMPUTE_MUL;
                 end
 
                 ST_COMPUTE_MUL: begin
-                    if (bg_read_state == BG_READ_AR) begin
-                        m_axi_araddr  <= bg_src_read_addr;
-                        m_axi_arvalid <= 1'b1;
+                    if (bg_read_state != BG_READ_IDLE) begin
+                        service_bg_read();
 `ifdef SIMULATION
                         if (trace_matmul_prefetch && ((group_count_reg - groups_left) < 32'd2)) begin
-                            $display("[tpu_pf_ar] group=%0d idx=%0d addr=%08x",
-                                     group_count_reg - groups_left,
-                                     bg_read_index,
-                                     bg_src_read_addr);
-                        end
-`endif
-                        if (m_axi_arvalid && m_axi_arready) begin
-                            m_axi_arvalid <= 1'b0;
-                            m_axi_rready  <= 1'b1;
-                            bg_read_state <= BG_READ_R;
-                        end
-                    end else if (bg_read_state == BG_READ_R) begin
-                        if (m_axi_rvalid && m_axi_rready) begin
-`ifdef SIMULATION
-                            if (trace_matmul_prefetch && ((group_count_reg - groups_left) < 32'd2)) begin
+                            if (bg_read_state == BG_READ_AR) begin
+                                $display("[tpu_pf_ar] group=%0d idx=%0d addr=%08x",
+                                         group_count_reg - groups_left,
+                                         bg_read_index,
+                                         bg_src_read_addr);
+                            end
+                            if (bg_read_state == BG_READ_R && m_axi_rvalid && m_axi_rready) begin
                                 $display("[tpu_pf_r] group=%0d idx=%0d data=%08x rlast=%0b",
                                          group_count_reg - groups_left,
                                          bg_read_index,
                                          m_axi_rdata,
                                          m_axi_rlast);
                             end
-`endif
-                            if (m_axi_rresp != 2'b00) begin
-                                m_axi_rready <= 1'b0;
-                                error <= 1'b1;
-                                busy  <= 1'b0;
-                                done  <= 1'b1;
-                                state <= ST_HALT;
-                            end else begin
-                                if (bg_read_index < 6'd16) begin
-                                    if (!prefetch_buf_sel) begin
-                                        a_mem0[bg_target_index] <= m_axi_rdata;
-                                    end else begin
-                                        a_mem1[bg_target_index] <= m_axi_rdata;
-                                    end
-                                end else begin
-                                    if (!prefetch_buf_sel) begin
-                                        b_mem0[bg_target_index] <= m_axi_rdata;
-                                    end else begin
-                                        b_mem1[bg_target_index] <= m_axi_rdata;
-                                    end
-                                end
-                                if (bg_read_index == 6'd31) begin
-                                    bg_read_state  <= BG_READ_IDLE;
-                                    m_axi_rready   <= 1'b0;
-                                    prefetch_valid <= 1'b1;
-                                end else begin
-                                    m_axi_rready  <= 1'b1;
-                                    bg_read_index <= bg_read_index + 6'd1;
-                                end
-                            end
                         end
+`endif
                     end
 
-                    c_mem[{row_idx, 2'b00} + 4'd0] <= row_next_col0;
-                    c_mem[{row_idx, 2'b00} + 4'd1] <= row_next_col1;
-                    c_mem[{row_idx, 2'b00} + 4'd2] <= row_next_col2;
-                    c_mem[{row_idx, 2'b00} + 4'd3] <= row_next_col3;
 `ifdef SIMULATION
                     if (trace_matmul_input && ((group_count_reg - groups_left) < 32'd2)) begin
                         $display("[tpu_in] group=%0d row=%0d a=%08x,%08x,%08x,%08x bcol0=%08x,%08x,%08x,%08x bcol1=%08x,%08x,%08x,%08x",
@@ -629,95 +738,66 @@ module tpu_axi_fetch_top #(
                                  row_next_col3);
                     end
 `endif
-                    if (compute_index == 5'd3) begin
-                        if (prefetch_needed && !prefetch_valid) begin
-                            state <= ST_PREFETCH_WAIT;
+                    if (mul_phase == 2'd3) begin
+                        c_mem[{row_idx, 2'b00} + 4'd0] <= row_next_col0;
+                        c_mem[{row_idx, 2'b00} + 4'd1] <= row_next_col1;
+                        c_mem[{row_idx, 2'b00} + 4'd2] <= row_next_col2;
+                        c_mem[{row_idx, 2'b00} + 4'd3] <= row_next_col3;
+                        mul_phase <= 2'd0;
+                        if (compute_index == 5'd3) begin
+                            if (prefetch_needed && !prefetch_valid) begin
+                                state <= ST_PREFETCH_WAIT;
+                            end else begin
+                                state <= ST_STORE_PREP;
+                            end
                         end else begin
-                            state <= ST_STORE_PREP;
+                            compute_index <= compute_index + 5'd1;
+                            if (bg_read_state == BG_READ_IDLE) begin
+                                m_axi_rready <= 1'b0;
+                            end
+                            state         <= ST_COMPUTE_PREP;
                         end
                     end else begin
-                        compute_index <= compute_index + 5'd1;
-                        state         <= ST_COMPUTE_PREP;
+                        mul_phase  <= mul_phase + 2'd1;
+                        row_acc0  <= row_next_col0;
+                        row_acc1  <= row_next_col1;
+                        row_acc2  <= row_next_col2;
+                        row_acc3  <= row_next_col3;
+                        if (bg_read_state == BG_READ_IDLE) begin
+                            m_axi_rready <= 1'b0;
+                        end
+                        state     <= ST_COMPUTE_MUL;
                     end
                 end
 
                 ST_PREFETCH_WAIT: begin
-                    if (bg_read_state == BG_READ_AR) begin
-                        m_axi_araddr  <= bg_src_read_addr;
-                        m_axi_arvalid <= 1'b1;
+                    if (bg_read_state != BG_READ_IDLE) begin
+                        service_bg_read();
 `ifdef SIMULATION
                         if (trace_matmul_prefetch && ((group_count_reg - groups_left) < 32'd2)) begin
-                            $display("[tpu_pf_ar] group=%0d idx=%0d addr=%08x",
-                                     group_count_reg - groups_left,
-                                     bg_read_index,
-                                     bg_src_read_addr);
-                        end
-`endif
-                        if (m_axi_arvalid && m_axi_arready) begin
-                            m_axi_arvalid <= 1'b0;
-                            m_axi_rready  <= 1'b1;
-                            bg_read_state <= BG_READ_R;
-                        end
-                    end else if (bg_read_state == BG_READ_R) begin
-                        if (m_axi_rvalid && m_axi_rready) begin
-`ifdef SIMULATION
-                            if (trace_matmul_prefetch && ((group_count_reg - groups_left) < 32'd2)) begin
+                            if (bg_read_state == BG_READ_AR) begin
+                                $display("[tpu_pf_ar] group=%0d idx=%0d addr=%08x",
+                                         group_count_reg - groups_left,
+                                         bg_read_index,
+                                         bg_src_read_addr);
+                            end
+                            if (bg_read_state == BG_READ_R && m_axi_rvalid && m_axi_rready) begin
                                 $display("[tpu_pf_r] group=%0d idx=%0d data=%08x rlast=%0b",
                                          group_count_reg - groups_left,
                                          bg_read_index,
                                          m_axi_rdata,
                                          m_axi_rlast);
                             end
+                        end
 `endif
-                            if (m_axi_rresp != 2'b00) begin
-                                m_axi_rready <= 1'b0;
-                                error <= 1'b1;
-                                busy  <= 1'b0;
-                                done  <= 1'b1;
-                                state <= ST_HALT;
-                            end else begin
-                                if (bg_read_index < 6'd16) begin
-                                    if (!prefetch_buf_sel) begin
-                                        a_mem0[bg_target_index] <= m_axi_rdata;
-                                    end else begin
-                                        a_mem1[bg_target_index] <= m_axi_rdata;
-                                    end
-                                end else begin
-                                    if (!prefetch_buf_sel) begin
-                                        b_mem0[bg_target_index] <= m_axi_rdata;
-                                    end else begin
-                                        b_mem1[bg_target_index] <= m_axi_rdata;
-                                    end
-                                end
-                                if (bg_read_index == 6'd31) begin
-                                    bg_read_state  <= BG_READ_IDLE;
-                                    m_axi_rready   <= 1'b0;
-                                    prefetch_valid <= 1'b1;
-                                    drain_idle_count <= 3'd0;
-                                    state          <= ST_PREFETCH_DRAIN;
-                                end else begin
-                                    m_axi_rready  <= 1'b1;
-                                    bg_read_index <= bg_read_index + 6'd1;
-                                end
-                            end
+                        if ((bg_read_state == BG_READ_R) &&
+                            bg_read_done &&
+                            m_axi_rvalid && m_axi_rready &&
+                            (m_axi_rresp == 2'b00)) begin
+                            state <= ST_STORE_PREP;
                         end
                     end else begin
-                        drain_idle_count <= 3'd0;
-                        state <= ST_PREFETCH_DRAIN;
-                    end
-                end
-
-                ST_PREFETCH_DRAIN: begin
-                    if (m_axi_rvalid) begin
-                        m_axi_rready     <= 1'b1;
-                        drain_idle_count <= 3'd0;
-                    end else if (drain_idle_count == 3'd4) begin
-                        m_axi_rready     <= 1'b0;
-                        drain_idle_count <= 3'd0;
-                        state            <= ST_STORE_PREP;
-                    end else begin
-                        m_axi_rready     <= 1'b0;
-                        drain_idle_count <= drain_idle_count + 3'd1;
+                        state <= ST_STORE_PREP;
                     end
                 end
 
@@ -732,7 +812,6 @@ module tpu_axi_fetch_top #(
                 end
 
                 ST_WRITE_AW: begin
-                    m_axi_rready  <= 1'b0;
                     m_axi_awaddr  <= dst_write_addr;
                     m_axi_awvalid <= 1'b1;
                     m_axi_wdata   <= current_store_word;
@@ -771,6 +850,8 @@ module tpu_axi_fetch_top #(
                             state            <= ST_WRITE_W;
                         end
                     end
+                    service_bg_read();
+                    drain_untracked_read();
                 end
 
                 ST_WRITE_W: begin
@@ -808,6 +889,8 @@ module tpu_axi_fetch_top #(
                             m_axi_wdata      <= next_store_word;
                         end
                     end
+                    service_bg_read();
+                    drain_untracked_read();
                 end
 
                 ST_WRITE_B: begin
@@ -832,6 +915,8 @@ module tpu_axi_fetch_top #(
                             end
                         end
                     end
+                    service_bg_read();
+                    drain_untracked_read();
                 end
 
                 ST_GROUP_NEXT: begin
@@ -843,11 +928,10 @@ module tpu_axi_fetch_top #(
                         groups_left     <= groups_left - 32'd1;
                         active_src_base <= active_src_base + 32'd128;
                         active_dst_base <= active_dst_base + 32'd192;
-                        compute_buf_sel  <= prefetch_buf_sel;
-                        prefetch_buf_sel <= ~prefetch_buf_sel;
                         prefetch_valid   <= 1'b0;
+                        bg_read_state    <= BG_READ_IDLE;
                         compute_index    <= 5'd0;
-                        state            <= ST_COMPUTE_PREP;
+                        state            <= ST_GROUP_PREP;
                     end
                 end
 
@@ -901,9 +985,50 @@ module mul_lut_u32 (
     output wire [63:0] y
 );
 
-    (* use_dsp = "no" *) wire [63:0] y_lut = {32'd0, a} * {32'd0, b};
+    wire [15:0] a_lo = a[15:0];
+    wire [15:0] a_hi = a[31:16];
+    wire [15:0] b_lo = b[15:0];
+    wire [15:0] b_hi = b[31:16];
 
-    assign y = y_lut;
+    wire [31:0] p_ll;
+    wire [31:0] p_lh;
+    wire [31:0] p_hl;
+    wire [31:0] p_hh;
+
+    mul_lut_u16 u_ll (.a(a_lo), .b(b_lo), .y(p_ll));
+    mul_lut_u16 u_lh (.a(a_lo), .b(b_hi), .y(p_lh));
+    mul_lut_u16 u_hl (.a(a_hi), .b(b_lo), .y(p_hl));
+    mul_lut_u16 u_hh (.a(a_hi), .b(b_hi), .y(p_hh));
+
+    assign y = {p_hh, 32'd0} + {16'd0, p_hl, 16'd0} + {16'd0, p_lh, 16'd0} + {32'd0, p_ll};
+
+endmodule
+
+module mul_lut_u16 (
+    input  wire [15:0] a,
+    input  wire [15:0] b,
+    output wire [31:0] y
+);
+
+    wire [31:0] pp0 = b[0]  ? ({16'd0, a} << 0)  : 32'd0;
+    wire [31:0] pp1 = b[1]  ? ({16'd0, a} << 1)  : 32'd0;
+    wire [31:0] pp2 = b[2]  ? ({16'd0, a} << 2)  : 32'd0;
+    wire [31:0] pp3 = b[3]  ? ({16'd0, a} << 3)  : 32'd0;
+    wire [31:0] pp4 = b[4]  ? ({16'd0, a} << 4)  : 32'd0;
+    wire [31:0] pp5 = b[5]  ? ({16'd0, a} << 5)  : 32'd0;
+    wire [31:0] pp6 = b[6]  ? ({16'd0, a} << 6)  : 32'd0;
+    wire [31:0] pp7 = b[7]  ? ({16'd0, a} << 7)  : 32'd0;
+    wire [31:0] pp8 = b[8]  ? ({16'd0, a} << 8)  : 32'd0;
+    wire [31:0] pp9 = b[9]  ? ({16'd0, a} << 9)  : 32'd0;
+    wire [31:0] pp10 = b[10] ? ({16'd0, a} << 10) : 32'd0;
+    wire [31:0] pp11 = b[11] ? ({16'd0, a} << 11) : 32'd0;
+    wire [31:0] pp12 = b[12] ? ({16'd0, a} << 12) : 32'd0;
+    wire [31:0] pp13 = b[13] ? ({16'd0, a} << 13) : 32'd0;
+    wire [31:0] pp14 = b[14] ? ({16'd0, a} << 14) : 32'd0;
+    wire [31:0] pp15 = b[15] ? ({16'd0, a} << 15) : 32'd0;
+
+    assign y = pp0 + pp1 + pp2 + pp3 + pp4 + pp5 + pp6 + pp7 +
+               pp8 + pp9 + pp10 + pp11 + pp12 + pp13 + pp14 + pp15;
 
 endmodule
 /* verilator lint_on DECLFILENAME */

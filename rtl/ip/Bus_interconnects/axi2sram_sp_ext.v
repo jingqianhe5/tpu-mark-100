@@ -208,7 +208,7 @@ module axi2sram_sp_ext #(
                     if (s_wvalid) begin
                         req_o          = 1'b1;
                         we_o           = 1'b1;
-                        state_d        = (s_wlast) ? SEND_B : WRITE_NOP;
+                        state_d        = (s_wlast) ? SEND_B : WRITE;
                         cnt_d          = 1;
                     // we still have to wait for the first w_valid to arrive
                     end else
@@ -246,7 +246,20 @@ module axi2sram_sp_ext #(
                         // we already got everything
                     end
                     else begin
-                        state_d = READ_ADDR;
+                        case (ax_req_q_burst)
+                            FIXED, INCR: req_addr_d = cons_addr;
+                            WRAP: begin
+                                if (cons_addr == upper_wrap_boundary) begin
+                                    req_addr_d = wrap_boundary;
+                                end else if (cons_addr > upper_wrap_boundary) begin
+                                    req_addr_d = ax_req_q_addr + ((cnt_q - ax_req_q_len) << LOG_NR_BYTES);
+                                end else begin
+                                    req_addr_d = cons_addr;
+                                end
+                            end
+                        endcase
+                        cnt_d = cnt_q + 1;
+                        state_d = READ;
                     end
                 end
             end
@@ -293,7 +306,7 @@ module axi2sram_sp_ext #(
             WRITE: begin
 
                 s_wready = 1'b1;
-                state_d  = WRITE_NOP;
+                state_d  = WRITE;
 
                 // consume a word here
                 if (s_wvalid) begin

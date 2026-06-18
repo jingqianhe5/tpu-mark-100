@@ -244,14 +244,14 @@ assign base_ram_addr = soc_sram_addr[21:2];
 assign base_ram_be_n = choose_sram ? 4'b1111 : ~be_out;
 assign base_ram_ce_n = ~(soc_sram_cs & (~choose_sram));
 assign base_ram_oe_n = soc_sram_we | choose_sram;
-assign base_ram_we_n = ~(soc_sram_we & (~choose_sram));
+assign base_ram_we_n = ~(soc_sram_we & (~choose_sram) & aclk);
 assign base_ram_data = ((~choose_sram) & soc_sram_cs & soc_sram_we) ? soc_sram_wdata : 32'hzzzzzzzz;
 
 assign ext_ram_addr = soc_sram_addr[21:2];
 assign ext_ram_be_n = choose_sram ? ~be_out : 4'b1111;
 assign ext_ram_ce_n = choose_sram ? ~soc_sram_cs : 1'b1;
 assign ext_ram_oe_n = choose_sram ? soc_sram_we : 1'b1;
-assign ext_ram_we_n = choose_sram ? ~soc_sram_we : 1'b1;
+assign ext_ram_we_n = choose_sram ? ~(soc_sram_we & aclk) : 1'b1;
 assign ext_ram_data = ((choose_sram) & soc_sram_cs & soc_sram_we) ? soc_sram_wdata : 32'hzzzzzzzz;
 
 assign soc_sram_rdata = choose_sram ? ext_ram_data : base_ram_data;
