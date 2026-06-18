@@ -70,15 +70,16 @@ module soc_top #(parameter SIMULATION=1'b0)
     output          ext_ram_oe_n,       //ExtRAM读使能，低有效
     output          ext_ram_we_n,       //ExtRAM写使能，低有效
 
-    //Flash存储器信号，参考 JS28F640 芯片手册
-    output [22:0]   flash_a,            //Flash地址，a0仅在8bit模式有效，16bit模式无意义
-    inout  [15:0]   flash_d,            //Flash数据
-    output          flash_rp_n,         //Flash复位信号，低有效
-    output          flash_vpen,         //Flash写保护信号，低电平时不能擦除、烧写
-    output          flash_ce_n,         //Flash片选信号，低有效
-    output          flash_oe_n,         //Flash读使能信号，低有效
-    output          flash_we_n,         //Flash写使能信号，低有效
-    output          flash_byte_n,       //Flash 8bit模式选择，低有效。在使用flash的16位模式时请设为1
+    // Flash is unused in the CI matmul submission. Keep these ports out of
+    // soc_top so Vivado does not require LOC/IOSTANDARD constraints for them.
+    // output [22:0]   flash_a,
+    // inout  [15:0]   flash_d,
+    // output          flash_rp_n,
+    // output          flash_vpen,
+    // output          flash_ce_n,
+    // output          flash_oe_n,
+    // output          flash_we_n,
+    // output          flash_byte_n,
 
     //------uart-------
     inout           UART_RX,            //串口RX接收
@@ -1138,16 +1139,6 @@ assign s7_axi_rdata   = 32'd0;
 assign s7_axi_rresp   = 2'b11;
 assign s7_axi_rlast   = 1'b1;
 assign s7_axi_rvalid  = s7_axi_arvalid;
-
-// S1 已改接新 DVI，Flash 外部引脚保持非选通状态。
-assign flash_a      = 23'd0;
-assign flash_d      = 16'hzzzz;
-assign flash_rp_n   = 1'b1;
-assign flash_vpen   = 1'b0;
-assign flash_ce_n   = 1'b1;
-assign flash_oe_n   = 1'b1;
-assign flash_we_n   = 1'b1;
-assign flash_byte_n = 1'b1;
 
 //==================================================
 // 实例化 Confreg (连接至 S4 端口)
