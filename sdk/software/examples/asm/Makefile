@@ -1,4 +1,4 @@
-TARGET = matmul_tpu
+TARGET = user-sample
 
 CFLAGS += -O3 -g
 CFLAGS += -DSIMU=1
@@ -6,7 +6,7 @@ CFLAGS += -DSIMU=1
 MATMUL_GROUP_NUM ?= 5000
 CFLAGS += -DMATMUL_GROUP_NUM=$(MATMUL_GROUP_NUM)
 
-C_SRCS := $(wildcard ./*.c)
+C_SRCS := ./main.c
 
 OBJDIR = obj
 COMMON_DIR = ../../bsp
