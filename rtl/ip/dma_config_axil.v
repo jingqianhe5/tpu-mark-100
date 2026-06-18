@@ -34,7 +34,10 @@ module dma_config_axil (
     output wire [31:0] write_cmd_addr,
     output wire [19:0] write_cmd_len,
     output wire        write_cmd_valid,
-    input  wire        write_cmd_ready
+    input  wire        write_cmd_ready,
+
+    input  wire        read_desc_status_valid,
+    input  wire        write_desc_status_valid
 );
 
     // AXI-Lite 内部握手寄存器
@@ -165,7 +168,7 @@ module dma_config_axil (
                 8'h08: axi_rdata <= reg_write_addr;
                 8'h0C: axi_rdata <= {12'd0, reg_write_len};
                 8'h10: axi_rdata <= 32'd0; // 命令寄存器读回0
-                8'h14: axi_rdata <= {30'd0, write_cmd_ready, read_cmd_ready}; // 状态寄存器
+                8'h14: axi_rdata <= {28'd0, write_desc_status_valid, read_desc_status_valid, write_cmd_ready, read_cmd_ready}; // 状态寄存器
                 default: axi_rdata <= 32'd0;
             endcase
         end

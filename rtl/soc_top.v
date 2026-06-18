@@ -742,7 +742,7 @@ assign tpu_infer_result_valid =
 assign tpu_infer_result_data =
     tpu_result_fifo_valid ? tpu_result_fifo_dout[127:0] : 128'd0;
 
-tpu_result_async_fifo u_tpu_lacc_cmd_async_fifo (
+tpu_lacc_cmd_async_fifo u_tpu_lacc_cmd_async_fifo (
     .rst         (~sys_resetn),
     .wr_clk      (cpu_clk),
     .rd_clk      (tpu_clk),
