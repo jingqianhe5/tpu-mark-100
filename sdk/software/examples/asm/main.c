@@ -1,5 +1,4 @@
 #include <stdint.h>
-#include <stdio.h>
 
 unsigned long UART_BASE = 0xbf000000;
 unsigned long CONFREG_TIMER_BASE = 0xbf20f100;
@@ -65,6 +64,30 @@ static void uart_putc(char ch)
     while ((uart_read_reg(UART_LSR) & UART_LSR_THRE) == 0) {
     }
     uart_write_reg(UART_THR, (uint8_t)ch);
+}
+
+static void uart_puts(const char *s)
+{
+    while (*s != '\0') {
+        uart_putc(*s++);
+    }
+}
+
+static void uart_put_hex32(uint32_t value)
+{
+    static const char hex[] = "0123456789abcdef";
+    int shift;
+
+    for (shift = 28; shift >= 0; shift -= 4) {
+        uart_putc(hex[(value >> shift) & 0xfu]);
+    }
+}
+
+static void uart_put_crc32_line(uint32_t crc)
+{
+    uart_puts("MATMUL_CRC32=");
+    uart_put_hex32(crc);
+    uart_putc('\n');
 }
 
 static char uart_getc_blocking(void)
@@ -221,7 +244,7 @@ int main(void)
     volatile const uint32_t keep_program_live = matmul_tpu_program[0];
     (void)keep_program_live;
 
-    printf("MATMUL_START\n");
+    uart_puts("MATMUL_START\n");
 
     uint32_t status = tpu_clear();
     if ((status & TPU_STATUS_ERROR) == 0) {
@@ -232,8 +255,8 @@ int main(void)
     }
 
     const uint32_t crc = tpu_read_pair(0);
-    printf("MATMUL_CRC32=%08x\n", crc);
-    printf("MATMUL_DONE\n");
+    uart_put_crc32_line(crc);
+    uart_puts("MATMUL_DONE\n");
 
     while (1) {
     }
