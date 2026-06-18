@@ -1135,7 +1135,7 @@ axi_uart_controller u_axi_uart_controller (
 );
 
 //==================================================
-// 实例化 AXI DVI 控制器 (旧 DVI 连接至 S3，新 DVI 连接至 S1)
+// 实例化 AXI DVI 控制器 (连接至 S3)
 //==================================================
 wire old_video_clk;
 wire old_video_hsync;
@@ -1145,22 +1145,13 @@ wire [2:0] old_video_red;
 wire [2:0] old_video_green;
 wire [1:0] old_video_blue;
 
-wire new_video_clk;
-wire new_video_hsync;
-wire new_video_vsync;
-wire new_video_de;
-wire [2:0] new_video_red;
-wire [2:0] new_video_green;
-wire [1:0] new_video_blue;
-wire       new_dvi_enable;
-
-assign video_clk   = new_dvi_enable ? new_video_clk   : old_video_clk;
-assign video_hsync = new_dvi_enable ? new_video_hsync : old_video_hsync;
-assign video_vsync = new_dvi_enable ? new_video_vsync : old_video_vsync;
-assign video_de    = new_dvi_enable ? new_video_de    : old_video_de;
-assign video_red   = new_dvi_enable ? new_video_red   : old_video_red;
-assign video_green = new_dvi_enable ? new_video_green : old_video_green;
-assign video_blue  = new_dvi_enable ? new_video_blue  : old_video_blue;
+assign video_clk   = old_video_clk;
+assign video_hsync = old_video_hsync;
+assign video_vsync = old_video_vsync;
+assign video_de    = old_video_de;
+assign video_red   = old_video_red;
+assign video_green = old_video_green;
+assign video_blue  = old_video_blue;
 
 axi_dvi u_axi_dvi (
     .s_awvalid      (s3_axi_awvalid  ),
@@ -1209,61 +1200,17 @@ axi_dvi u_axi_dvi (
     .aresetn        (sys_resetn      )
 );
 
-//==================================================
-// 实例化新 DVI 控制器 (连接至 S1 端口)
-//==================================================
-dvi #(
-    .ID_WIDTH       (6)
-) u_new_dvi (
-    .aclk           (sys_clk         ),
-    .aresetn        (sys_resetn      ),
-    .cpu_clk        (cpu_clk         ),
-    .cpu_resetn     (cpu_resetn      ),
-    .s_awid         (s1_axi_awid     ),
-    .s_awaddr       (s1_axi_awaddr   ),
-    .s_awlen        (s1_axi_awlen    ),
-    .s_awsize       (s1_axi_awsize   ),
-    .s_awburst      (s1_axi_awburst  ),
-    .s_awlock       (s1_axi_awlock   ),
-    .s_awcache      (s1_axi_awcache  ),
-    .s_awprot       (s1_axi_awprot   ),
-    .s_awvalid      (s1_axi_awvalid  ),
-    .s_awready      (s1_axi_awready  ),
-    .s_wid          (s1_axi_awid     ),
-    .s_wdata        (s1_axi_wdata    ),
-    .s_wstrb        (s1_axi_wstrb    ),
-    .s_wlast        (s1_axi_wlast    ),
-    .s_wvalid       (s1_axi_wvalid   ),
-    .s_wready       (s1_axi_wready   ),
-    .s_bid          (s1_axi_bid      ),
-    .s_bresp        (s1_axi_bresp    ),
-    .s_bvalid       (s1_axi_bvalid   ),
-    .s_bready       (s1_axi_bready   ),
-    .s_arid         (s1_axi_arid     ),
-    .s_araddr       (s1_axi_araddr   ),
-    .s_arlen        (s1_axi_arlen    ),
-    .s_arsize       (s1_axi_arsize   ),
-    .s_arburst      (s1_axi_arburst  ),
-    .s_arlock       (s1_axi_arlock   ),
-    .s_arcache      (s1_axi_arcache  ),
-    .s_arprot       (s1_axi_arprot   ),
-    .s_arvalid      (s1_axi_arvalid  ),
-    .s_arready      (s1_axi_arready  ),
-    .s_rid          (s1_axi_rid      ),
-    .s_rdata        (s1_axi_rdata    ),
-    .s_rresp        (s1_axi_rresp    ),
-    .s_rlast        (s1_axi_rlast    ),
-    .s_rvalid       (s1_axi_rvalid   ),
-    .s_rready       (s1_axi_rready   ),
-    .video_clk      (new_video_clk   ),
-    .video_hsync    (new_video_hsync ),
-    .video_vsync    (new_video_vsync ),
-    .video_de       (new_video_de    ),
-    .video_red      (new_video_red   ),
-    .video_green    (new_video_green ),
-    .video_blue     (new_video_blue  ),
-    .dvi_enable     (new_dvi_enable  )
-);
+assign s1_axi_awready = 1'b1;
+assign s1_axi_wready  = 1'b1;
+assign s1_axi_bid     = s1_axi_awid;
+assign s1_axi_bresp   = 2'b11;
+assign s1_axi_bvalid  = s1_axi_awvalid && s1_axi_wvalid;
+assign s1_axi_arready = 1'b1;
+assign s1_axi_rid     = s1_axi_arid;
+assign s1_axi_rdata   = 32'd0;
+assign s1_axi_rresp   = 2'b11;
+assign s1_axi_rlast   = 1'b1;
+assign s1_axi_rvalid  = s1_axi_arvalid;
 
 //==================================================
 // 实例化 AXI to AXI-Lite 适配器 (连接至 S5 端口, 用于DMA配置)
