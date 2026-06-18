@@ -814,41 +814,11 @@ module tpu_axi_fetch_top #(
                 ST_WRITE_AW: begin
                     m_axi_awaddr  <= dst_write_addr;
                     m_axi_awvalid <= 1'b1;
-                    m_axi_wdata   <= current_store_word;
-                    m_axi_wvalid  <= 1'b1;
-                    if (m_axi_awvalid && m_axi_awready && m_axi_wvalid && m_axi_wready) begin
-`ifdef SIMULATION
-                        if (trace_matmul_write && ((group_count_reg - groups_left) < 32'd2)) begin
-                            $display("[tpu_wr] group=%0d beat=%0d data=%08x last=%0b awaddr=%08x",
-                                     group_count_reg - groups_left,
-                                     write_index,
-                                     m_axi_wdata,
-                                     (write_index[3:0] == 4'hf),
-                                     m_axi_awaddr);
-                        end
-`endif
-                        crc32_reg <= crc32_step_word_le(crc32_reg, m_axi_wdata);
+                    m_axi_wvalid  <= 1'b0;
+                    if (m_axi_awvalid && m_axi_awready) begin
                         m_axi_awvalid <= 1'b0;
-                        if (write_index == 6'd47) begin
-                            final_crc32_reg <= ~crc32_step_word_le(crc32_reg, m_axi_wdata);
-                            m_axi_wvalid    <= 1'b0;
-                            m_axi_bready    <= 1'b1;
-                            state           <= ST_WRITE_B;
-                        end else if (write_burst_last) begin
-                            write_index      <= write_index + 6'd1;
-                            store_word_sel   <= next_store_word_sel;
-                            store_elem_index <= next_store_elem_index;
-                            m_axi_wdata      <= next_store_word;
-                            m_axi_wvalid     <= 1'b0;
-                            m_axi_bready     <= 1'b1;
-                            state            <= ST_WRITE_B;
-                        end else begin
-                            write_index      <= write_index + 6'd1;
-                            store_word_sel   <= next_store_word_sel;
-                            store_elem_index <= next_store_elem_index;
-                            m_axi_wdata      <= next_store_word;
-                            state            <= ST_WRITE_W;
-                        end
+                        m_axi_wdata   <= current_store_word;
+                        state         <= ST_WRITE_W;
                     end
                     service_bg_read();
                     drain_untracked_read();
