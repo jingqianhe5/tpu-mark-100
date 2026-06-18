@@ -1,4 +1,4 @@
-`timescale 1ns / 1ps
+`timescale 1ps / 1ps
 
 module clk_pll (
     output cpu_clk,
@@ -9,65 +9,88 @@ module clk_pll (
     input  clk_in1
 );
 
-    wire clkfb;
-    wire clkfb_buf;
-    wire cpu_clk_mmcm;
-    wire sys_clk_mmcm;
-    wire clk_out3_mmcm;
+    clk_pll_clk_wiz inst (
+        .cpu_clk  (cpu_clk),
+        .sys_clk  (sys_clk),
+        .clk_out3 (clk_out3),
+        .resetn   (resetn),
+        .locked   (locked),
+        .clk_in1  (clk_in1)
+    );
+
+endmodule
+
+module clk_pll_clk_wiz (
+    output cpu_clk,
+    output sys_clk,
+    output clk_out3,
+    input  resetn,
+    output locked,
+    input  clk_in1
+);
+
+    wire clkfbout;
+    wire clkfbout_buf;
+    wire cpu_clk_unbuf;
+    wire sys_clk_unbuf;
+    wire clk_out3_unbuf;
 
     MMCME2_ADV #(
         .BANDWIDTH            ("OPTIMIZED"),
-        .CLKFBOUT_MULT_F      (31.000),
+        .CLKOUT4_CASCADE      ("FALSE"),
+        .COMPENSATION         ("ZHOLD"),
+        .STARTUP_WAIT         ("FALSE"),
+        .DIVCLK_DIVIDE        (1),
+        .CLKFBOUT_MULT_F      (20.000),
         .CLKFBOUT_PHASE       (0.000),
+        .CLKFBOUT_USE_FINE_PS ("FALSE"),
         .CLKIN1_PERIOD        (20.000),
         .CLKIN2_PERIOD        (10.000),
-        .CLKOUT0_DIVIDE_F     (47.000),
-        .CLKOUT0_DUTY_CYCLE   (0.500),
+        .CLKOUT0_DIVIDE_F     (30.250),
         .CLKOUT0_PHASE        (0.000),
-        .CLKOUT1_DIVIDE       (31),
-        .CLKOUT1_DUTY_CYCLE   (0.500),
+        .CLKOUT0_DUTY_CYCLE   (0.500),
+        .CLKOUT0_USE_FINE_PS  ("FALSE"),
+        .CLKOUT1_DIVIDE       (20),
         .CLKOUT1_PHASE        (0.000),
-        .CLKOUT2_DIVIDE       (31),
-        .CLKOUT2_DUTY_CYCLE   (0.500),
+        .CLKOUT1_DUTY_CYCLE   (0.500),
+        .CLKOUT1_USE_FINE_PS  ("FALSE"),
+        .CLKOUT2_DIVIDE       (20),
         .CLKOUT2_PHASE        (0.000),
+        .CLKOUT2_DUTY_CYCLE   (0.500),
+        .CLKOUT2_USE_FINE_PS  ("FALSE"),
         .CLKOUT3_DIVIDE       (1),
-        .CLKOUT3_DUTY_CYCLE   (0.500),
         .CLKOUT3_PHASE        (0.000),
-        .CLKOUT4_CASCADE      ("FALSE"),
+        .CLKOUT3_DUTY_CYCLE   (0.500),
+        .CLKOUT3_USE_FINE_PS  ("FALSE"),
         .CLKOUT4_DIVIDE       (1),
-        .CLKOUT4_DUTY_CYCLE   (0.500),
         .CLKOUT4_PHASE        (0.000),
+        .CLKOUT4_DUTY_CYCLE   (0.500),
+        .CLKOUT4_USE_FINE_PS  ("FALSE"),
         .CLKOUT5_DIVIDE       (1),
-        .CLKOUT5_DUTY_CYCLE   (0.500),
         .CLKOUT5_PHASE        (0.000),
+        .CLKOUT5_DUTY_CYCLE   (0.500),
+        .CLKOUT5_USE_FINE_PS  ("FALSE"),
         .CLKOUT6_DIVIDE       (1),
-        .CLKOUT6_DUTY_CYCLE   (0.500),
         .CLKOUT6_PHASE        (0.000),
-        .COMPENSATION         ("ZHOLD"),
-        .DIVCLK_DIVIDE        (1),
+        .CLKOUT6_DUTY_CYCLE   (0.500),
+        .CLKOUT6_USE_FINE_PS  ("FALSE"),
         .REF_JITTER1          (0.010),
-        .REF_JITTER2          (0.010),
-        .STARTUP_WAIT         ("FALSE")
-    ) u_mmcm (
-        .CLKFBOUT             (clkfb),
+        .REF_JITTER2          (0.010)
+    ) plle2_adv_inst (
+        .CLKFBOUT             (clkfbout),
         .CLKFBOUTB            (),
-        .CLKFBSTOPPED         (),
-        .CLKINSTOPPED         (),
-        .CLKOUT0              (cpu_clk_mmcm),
+        .CLKOUT0              (cpu_clk_unbuf),
         .CLKOUT0B             (),
-        .CLKOUT1              (sys_clk_mmcm),
+        .CLKOUT1              (sys_clk_unbuf),
         .CLKOUT1B             (),
-        .CLKOUT2              (clk_out3_mmcm),
+        .CLKOUT2              (clk_out3_unbuf),
         .CLKOUT2B             (),
         .CLKOUT3              (),
         .CLKOUT3B             (),
         .CLKOUT4              (),
         .CLKOUT5              (),
         .CLKOUT6              (),
-        .DO                   (),
-        .DRDY                 (),
-        .LOCKED               (locked),
-        .CLKFBIN              (clkfb_buf),
+        .CLKFBIN              (clkfbout_buf),
         .CLKIN1               (clk_in1),
         .CLKIN2               (1'b0),
         .CLKINSEL             (1'b1),
@@ -76,30 +99,36 @@ module clk_pll (
         .DEN                  (1'b0),
         .DI                   (16'd0),
         .DWE                  (1'b0),
+        .DO                   (),
+        .DRDY                 (),
+        .LOCKED               (locked),
+        .CLKINSTOPPED         (),
+        .CLKFBSTOPPED         (),
         .PSCLK                (1'b0),
         .PSEN                 (1'b0),
         .PSINCDEC             (1'b0),
+        .PSDONE               (),
         .PWRDWN               (1'b0),
         .RST                  (~resetn)
     );
 
-    BUFG u_clkfb_buf (
-        .I (clkfb),
-        .O (clkfb_buf)
+    BUFG clkf_buf (
+        .I (clkfbout),
+        .O (clkfbout_buf)
     );
 
-    BUFG u_cpu_clk_buf (
-        .I (cpu_clk_mmcm),
+    BUFG clkout1_buf (
+        .I (cpu_clk_unbuf),
         .O (cpu_clk)
     );
 
-    BUFG u_sys_clk_buf (
-        .I (sys_clk_mmcm),
+    BUFG clkout2_buf (
+        .I (sys_clk_unbuf),
         .O (sys_clk)
     );
 
-    BUFG u_clk_out3_buf (
-        .I (clk_out3_mmcm),
+    BUFG clkout3_buf (
+        .I (clk_out3_unbuf),
         .O (clk_out3)
     );
 
