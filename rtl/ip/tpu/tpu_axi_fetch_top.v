@@ -109,6 +109,7 @@ module tpu_axi_fetch_top #(
     reg        compute_buf_sel;
     reg        prefetch_buf_sel;
     reg        prefetch_valid;
+    reg        input_from_prefetch;
     reg [1:0]  bg_read_state;
     reg [5:0]  bg_read_index;
     reg [31:0] bg_read_base;
@@ -279,7 +280,7 @@ module tpu_axi_fetch_top #(
         end
     endfunction
 
-    wire prefetch_needed = 1'b0;
+    wire prefetch_needed = (groups_left > 32'd1);
 
     task start_prefetch_read;
         begin
@@ -427,6 +428,7 @@ module tpu_axi_fetch_top #(
             compute_buf_sel  <= 1'b0;
             prefetch_buf_sel <= 1'b1;
             prefetch_valid   <= 1'b0;
+            input_from_prefetch <= 1'b0;
             bg_read_state    <= BG_READ_IDLE;
             bg_read_index    <= 6'd0;
             bg_read_base     <= 32'd0;
@@ -550,6 +552,7 @@ module tpu_axi_fetch_top #(
                             compute_buf_sel <= 1'b0;
                             prefetch_buf_sel <= 1'b1;
                             prefetch_valid  <= 1'b0;
+                            input_from_prefetch <= 1'b0;
                             bg_read_state   <= BG_READ_IDLE;
                             report_wait_count <= 3'd0;
                             state           <= (group_count_reg == 32'd0) ? ST_HALT : ST_GROUP_PREP;
@@ -586,16 +589,14 @@ module tpu_axi_fetch_top #(
                     store_elem_index <= 4'd0;
                     store_word_sel   <= 2'd0;
                     for (i = 0; i < 16; i = i + 1) begin
-                        if (!compute_buf_sel) begin
-                            a_mem0[i] <= 32'd0;
-                            b_mem0[i] <= 32'd0;
-                        end else begin
-                            a_mem1[i] <= 32'd0;
-                            b_mem1[i] <= 32'd0;
-                        end
                         c_mem[i] <= 66'd0;
                     end
-                    state <= ST_READ_AR;
+                    if (input_from_prefetch) begin
+                        input_from_prefetch <= 1'b0;
+                        state <= ST_COMPUTE_PREP;
+                    end else begin
+                        state <= ST_READ_AR;
+                    end
                 end
 
                 ST_READ_AR: begin
@@ -980,6 +981,13 @@ module tpu_axi_fetch_top #(
                         groups_left     <= groups_left - 32'd1;
                         active_src_base <= active_src_base + 32'd128;
                         active_dst_base <= active_dst_base + 32'd192;
+                        if (prefetch_valid) begin
+                            compute_buf_sel  <= prefetch_buf_sel;
+                            prefetch_buf_sel <= ~prefetch_buf_sel;
+                            input_from_prefetch <= 1'b1;
+                        end else begin
+                            input_from_prefetch <= 1'b0;
+                        end
                         prefetch_valid   <= 1'b0;
                         bg_read_state    <= BG_READ_IDLE;
                         compute_index    <= 5'd0;
