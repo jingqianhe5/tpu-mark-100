@@ -129,6 +129,7 @@ else begin: pll_clk
         .locked     (pll_locked),
         .clk_in1    (clk)
     );
+    assign tpu_clk = sys_clk;
     rst_sync u_rst_sys(
         .clk(sys_clk),
         .rst_n_in(pll_locked),

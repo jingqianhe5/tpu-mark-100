@@ -16,8 +16,20 @@ unsigned long CORE_CLOCKS_PER_SEC = 33000000L;
 #define MATMUL_GROUP_NUM 5000u
 #endif
 
+#ifndef MATMUL_DEBUG
+#define MATMUL_DEBUG 0
+#endif
+
+#ifndef TPU_STATUS_POLL_LIMIT
+#define TPU_STATUS_POLL_LIMIT 200000000u
+#endif
+
+#ifndef MATMUL_SRC_BASE
 #define MATMUL_SRC_BASE      0x1c400000u
+#endif
+#ifndef MATMUL_RESULT_BASE
 #define MATMUL_RESULT_BASE   (MATMUL_SRC_BASE + (MATMUL_GROUP_NUM * 128u))
+#endif
 #define MATMUL_RESULT_BYTES  (MATMUL_GROUP_NUM * 192u)
 
 #define MATMUL_TPU_START_PC      0x1c00b000u
@@ -203,6 +215,7 @@ static inline uint32_t tpu_read_pair(uint32_t pair_index)
 
 static int wait_tpu_done(uint32_t *status_out)
 {
+    uint32_t polls = 0;
     while (1) {
         const uint32_t status = tpu_status();
         if (status & TPU_STATUS_ERROR) {
@@ -212,6 +225,11 @@ static int wait_tpu_done(uint32_t *status_out)
         if (status & TPU_STATUS_DONE) {
             *status_out = status;
             return 0;
+        }
+        polls++;
+        if (polls >= TPU_STATUS_POLL_LIMIT) {
+            *status_out = status;
+            return -2;
         }
     }
 }
@@ -239,11 +257,21 @@ int main(void)
     printf("MATMUL_START\n");
 
     uint32_t status = tpu_clear();
+#if MATMUL_DEBUG
+    printf("DBG_CLEAR=%08x\n", status);
+#endif
     if ((status & TPU_STATUS_ERROR) == 0) {
         status = tpu_start(MATMUL_TPU_START_PC);
+#if MATMUL_DEBUG
+        printf("DBG_START=%08x\n", status);
+#endif
     }
     if ((status & TPU_STATUS_ERROR) == 0) {
-        (void)wait_tpu_done(&status);
+        int wait_rc = wait_tpu_done(&status);
+#if MATMUL_DEBUG
+        printf("DBG_WAIT_RC=%08x\n", (uint32_t)wait_rc);
+        printf("DBG_STATUS=%08x\n", status);
+#endif
     }
 
     const uint32_t crc = tpu_read_pair(0);
