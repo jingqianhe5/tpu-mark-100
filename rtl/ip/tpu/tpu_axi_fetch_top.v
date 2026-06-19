@@ -83,12 +83,14 @@ module tpu_axi_fetch_top #(
         ST_GROUP_NEXT     = 6'd13,
         ST_REPORT_RESULT  = 6'd14,
         ST_HALT           = 6'd15,
-        ST_PREFETCH_WAIT  = 6'd16;
+        ST_PREFETCH_WAIT  = 6'd16,
+        ST_PREFETCH_DRAIN = 6'd17;
 
     localparam [1:0]
         BG_READ_IDLE = 2'd0,
         BG_READ_AR   = 2'd1,
-        BG_READ_R    = 2'd2;
+        BG_READ_R    = 2'd2,
+        BG_READ_WAIT = 2'd3;
 
     reg [5:0] state;
 
@@ -139,6 +141,7 @@ module tpu_axi_fetch_top #(
     reg [127:0] infer_result_data_reg;
     reg [SYSTOLIC_ARRAY_WIDTH-1:0] infer_result_valid_reg;
     reg [2:0] report_wait_count;
+    reg [2:0] drain_idle_count;
 `ifdef SIMULATION
     reg trace_matmul_row;
     reg trace_matmul_write;
@@ -280,11 +283,12 @@ module tpu_axi_fetch_top #(
         end
     endfunction
 
-    wire prefetch_needed = (groups_left > 32'd1);
+    wire prefetch_needed = (groups_left > 32'd1) && !prefetch_valid;
 
     task start_prefetch_read;
         begin
-            if (prefetch_needed && (bg_read_state == BG_READ_IDLE)) begin
+            if (prefetch_needed && (bg_read_state == BG_READ_IDLE) &&
+                !m_axi_arvalid && !m_axi_rvalid && !m_axi_rready) begin
                 bg_read_state     <= BG_READ_AR;
                 bg_read_index     <= 6'd0;
                 bg_read_base      <= active_src_base + 32'd128;
@@ -297,43 +301,14 @@ module tpu_axi_fetch_top #(
             if (bg_read_state == BG_READ_AR) begin
                 m_axi_araddr  <= bg_src_read_addr;
                 m_axi_arvalid <= 1'b1;
-                m_axi_rready  <= 1'b1;
                 if (m_axi_arvalid && m_axi_arready) begin
                     m_axi_arvalid <= 1'b0;
-                    m_axi_rready  <= 1'b1;
-                    bg_read_state <= BG_READ_R;
+                    m_axi_rready  <= 1'b0;
+                    bg_read_state <= BG_READ_WAIT;
                 end
-                if (m_axi_rvalid && m_axi_rready) begin
-                    if (m_axi_rresp != 2'b00) begin
-                        m_axi_rready <= 1'b0;
-                        error <= 1'b1;
-                        busy  <= 1'b0;
-                        done  <= 1'b1;
-                        state <= ST_HALT;
-                    end else begin
-                        if (bg_read_index < 6'd16) begin
-                            if (!prefetch_buf_sel) begin
-                                a_mem0[bg_target_index] <= m_axi_rdata;
-                            end else begin
-                                a_mem1[bg_target_index] <= m_axi_rdata;
-                            end
-                        end else begin
-                            if (!prefetch_buf_sel) begin
-                                b_mem0[bg_target_index] <= m_axi_rdata;
-                            end else begin
-                                b_mem1[bg_target_index] <= m_axi_rdata;
-                            end
-                        end
-                        if (bg_read_index == 6'd31) begin
-                            bg_read_state  <= BG_READ_IDLE;
-                            m_axi_rready   <= 1'b0;
-                            prefetch_valid <= 1'b1;
-                        end else begin
-                            m_axi_rready  <= 1'b1;
-                            bg_read_index <= bg_read_index + 6'd1;
-                        end
-                    end
-                end
+            end else if (bg_read_state == BG_READ_WAIT) begin
+                m_axi_rready  <= 1'b1;
+                bg_read_state <= BG_READ_R;
             end else if (bg_read_state == BG_READ_R) begin
                 m_axi_rready <= 1'b1;
                 if (m_axi_rvalid && m_axi_rready) begin
@@ -369,14 +344,6 @@ module tpu_axi_fetch_top #(
                         end
                     end
                 end
-            end
-        end
-    endtask
-
-    task drain_untracked_read;
-        begin
-            if ((bg_read_state == BG_READ_IDLE) && m_axi_rvalid) begin
-                m_axi_rready <= 1'b1;
             end
         end
     endtask
@@ -437,6 +404,7 @@ module tpu_axi_fetch_top #(
             infer_result_data_reg  <= 128'd0;
             infer_result_valid_reg <= {SYSTOLIC_ARRAY_WIDTH{1'b0}};
             report_wait_count <= 3'd0;
+            drain_idle_count  <= 3'd0;
             m_axi_awaddr     <= 32'd0;
             m_axi_awvalid    <= 1'b0;
             m_axi_wdata      <= 32'd0;
@@ -489,24 +457,10 @@ module tpu_axi_fetch_top #(
                 ST_FETCH_AR: begin
                     m_axi_araddr  <= pc_current;
                     m_axi_arvalid <= 1'b1;
-                    m_axi_rready  <= 1'b1;
                     if (m_axi_arvalid && m_axi_arready) begin
                         m_axi_arvalid <= 1'b0;
                         m_axi_rready  <= 1'b1;
                         state         <= ST_FETCH_R;
-                    end
-                    if (m_axi_rvalid && m_axi_rready) begin
-                        m_axi_rready <= 1'b0;
-                        last_ins     <= m_axi_rdata;
-                        ins_reg      <= m_axi_rdata;
-                        if (m_axi_rresp != 2'b00) begin
-                            error <= 1'b1;
-                            busy  <= 1'b0;
-                            done  <= 1'b1;
-                            state <= ST_HALT;
-                        end else begin
-                            state <= ST_DECODE;
-                        end
                     end
                 end
 
@@ -555,6 +509,7 @@ module tpu_axi_fetch_top #(
                             input_from_prefetch <= 1'b0;
                             bg_read_state   <= BG_READ_IDLE;
                             report_wait_count <= 3'd0;
+                            drain_idle_count <= 3'd0;
                             state           <= (group_count_reg == 32'd0) ? ST_HALT : ST_GROUP_PREP;
                         end
                         OP_END: begin
@@ -606,38 +561,37 @@ module tpu_axi_fetch_top #(
                     if (m_axi_arvalid && m_axi_arready) begin
                         m_axi_arvalid <= 1'b0;
                         m_axi_rready  <= 1'b1;
-                        state         <= ST_READ_R;
-                    end
-                    if (m_axi_rvalid && m_axi_rready) begin
-                        if (m_axi_rresp != 2'b00) begin
-                            m_axi_rready <= 1'b0;
-                            error <= 1'b1;
-                            busy  <= 1'b0;
-                            done  <= 1'b1;
-                            state <= ST_HALT;
-                        end else begin
-                            if (read_target_is_a) begin
-                                if (!compute_buf_sel) begin
-                                    a_mem0[read_target_index] <= m_axi_rdata;
-                                end else begin
-                                    a_mem1[read_target_index] <= m_axi_rdata;
-                                end
-                            end else begin
-                                if (!compute_buf_sel) begin
-                                    b_mem0[read_target_index] <= m_axi_rdata;
-                                end else begin
-                                    b_mem1[read_target_index] <= m_axi_rdata;
-                                end
-                            end
-                            if (read_burst_last) begin
+                        if (m_axi_rvalid) begin
+                            if (m_axi_rresp != 2'b00) begin
                                 m_axi_rready <= 1'b0;
-                                state <= ST_COMPUTE_PREP;
+                                error <= 1'b1;
+                                busy  <= 1'b0;
+                                done  <= 1'b1;
+                                state <= ST_HALT;
                             end else begin
-                                m_axi_rready <= 1'b1;
-                                if (read_index != 6'd31) begin
+                                if (read_target_is_a) begin
+                                    if (!compute_buf_sel) begin
+                                        a_mem0[read_target_index] <= m_axi_rdata;
+                                    end else begin
+                                        a_mem1[read_target_index] <= m_axi_rdata;
+                                    end
+                                end else begin
+                                    if (!compute_buf_sel) begin
+                                        b_mem0[read_target_index] <= m_axi_rdata;
+                                    end else begin
+                                        b_mem1[read_target_index] <= m_axi_rdata;
+                                    end
+                                end
+                                if (main_read_done) begin
+                                    m_axi_rready <= 1'b0;
+                                    state <= ST_COMPUTE_PREP;
+                                end else begin
+                                    state <= ST_READ_R;
                                     read_index <= read_index + 6'd1;
                                 end
                             end
+                        end else begin
+                            state <= ST_READ_R;
                         end
                     end
                 end
@@ -680,6 +634,8 @@ module tpu_axi_fetch_top #(
                 ST_COMPUTE_PREP: begin
                     if (bg_read_state == BG_READ_IDLE) begin
                         start_prefetch_read();
+                    end else begin
+                        service_bg_read();
                     end
                     row_idx   <= compute_index[1:0];
                     mul_phase <= 2'd0;
@@ -877,10 +833,26 @@ module tpu_axi_fetch_top #(
                             bg_read_done &&
                             m_axi_rvalid && m_axi_rready &&
                             (m_axi_rresp == 2'b00)) begin
+                            drain_idle_count <= 3'd0;
                             state <= ST_STORE_PREP;
                         end
                     end else begin
+                        drain_idle_count <= 3'd0;
                         state <= ST_STORE_PREP;
+                    end
+                end
+
+                ST_PREFETCH_DRAIN: begin
+                    if (m_axi_rvalid) begin
+                        m_axi_rready     <= 1'b1;
+                        drain_idle_count <= 3'd0;
+                    end else if (drain_idle_count == 3'd4) begin
+                        m_axi_rready     <= 1'b0;
+                        drain_idle_count <= 3'd0;
+                        state            <= ST_STORE_PREP;
+                    end else begin
+                        m_axi_rready     <= 1'b0;
+                        drain_idle_count <= drain_idle_count + 3'd1;
                     end
                 end
 
@@ -895,6 +867,7 @@ module tpu_axi_fetch_top #(
                 end
 
                 ST_WRITE_AW: begin
+                    m_axi_rready  <= 1'b0;
                     m_axi_awaddr  <= dst_write_addr;
                     m_axi_awvalid <= 1'b1;
                     m_axi_wvalid  <= 1'b0;
@@ -903,11 +876,10 @@ module tpu_axi_fetch_top #(
                         m_axi_wdata   <= current_store_word;
                         state         <= ST_WRITE_W;
                     end
-                    service_bg_read();
-                    drain_untracked_read();
                 end
 
                 ST_WRITE_W: begin
+                    m_axi_rready <= 1'b0;
                     if (!m_axi_wvalid) begin
                         m_axi_wdata  <= current_store_word;
                         m_axi_wvalid <= 1'b1;
@@ -942,11 +914,10 @@ module tpu_axi_fetch_top #(
                             m_axi_wdata      <= next_store_word;
                         end
                     end
-                    service_bg_read();
-                    drain_untracked_read();
                 end
 
                 ST_WRITE_B: begin
+                    m_axi_rready <= 1'b0;
                     if (m_axi_bvalid && m_axi_bready) begin
                         m_axi_bready <= 1'b0;
                         if (m_axi_bresp != 2'b00) begin
@@ -968,8 +939,6 @@ module tpu_axi_fetch_top #(
                             end
                         end
                     end
-                    service_bg_read();
-                    drain_untracked_read();
                 end
 
                 ST_GROUP_NEXT: begin

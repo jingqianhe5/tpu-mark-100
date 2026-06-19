@@ -246,20 +246,7 @@ module axi2sram_sp_ext #(
                         // we already got everything
                     end
                     else begin
-                        case (ax_req_q_burst)
-                            FIXED, INCR: req_addr_d = cons_addr;
-                            WRAP: begin
-                                if (cons_addr == upper_wrap_boundary) begin
-                                    req_addr_d = wrap_boundary;
-                                end else if (cons_addr > upper_wrap_boundary) begin
-                                    req_addr_d = ax_req_q_addr + ((cnt_q - ax_req_q_len) << LOG_NR_BYTES);
-                                end else begin
-                                    req_addr_d = cons_addr;
-                                end
-                            end
-                        endcase
-                        cnt_d = cnt_q + 1;
-                        state_d = READ;
+                        state_d = READ_ADDR;
                     end
                 end
             end

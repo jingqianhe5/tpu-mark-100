@@ -79,6 +79,21 @@ static void uart_putc(char ch)
     uart_write_reg(UART_THR, (uint8_t)ch);
 }
 
+static void uart_puts_raw(const char *s)
+{
+    while (*s) {
+        uart_putc(*s++);
+    }
+}
+
+static void uart_put_hex32(uint32_t value)
+{
+    static const char hex[] = "0123456789abcdef";
+    for (int shift = 28; shift >= 0; shift -= 4) {
+        uart_putc(hex[(value >> shift) & 0xfu]);
+    }
+}
+
 static char uart_getc_blocking(void)
 {
     while ((uart_read_reg(UART_LSR) & UART_LSR_DR) == 0) {
@@ -254,12 +269,13 @@ int main(void)
 {
     install_tpu_program();
 
-    printf("MATMUL_START\n");
-
     uint32_t status = tpu_clear();
 #if MATMUL_DEBUG
     printf("DBG_CLEAR=%08x\n", status);
 #endif
+
+    uart_puts_raw("MATMUL_START\n");
+
     if ((status & TPU_STATUS_ERROR) == 0) {
         status = tpu_start(MATMUL_TPU_START_PC);
 #if MATMUL_DEBUG
@@ -275,8 +291,10 @@ int main(void)
     }
 
     const uint32_t crc = tpu_read_pair(0);
-    printf("MATMUL_CRC32=%08x\n", crc);
-    printf("MATMUL_DONE\n");
+    uart_puts_raw("MATMUL_CRC32=");
+    uart_put_hex32(crc);
+    uart_putc('\n');
+    uart_puts_raw("MATMUL_DONE\n");
 
     while (1) {
     }
