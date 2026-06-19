@@ -123,6 +123,10 @@ module tpu_axi_fetch_top #(
     reg [65:0] row_acc1;
     reg [65:0] row_acc2;
     reg [65:0] row_acc3;
+    reg [31:0] a_row0_reg;
+    reg [31:0] a_row1_reg;
+    reg [31:0] a_row2_reg;
+    reg [31:0] a_row3_reg;
 
     reg [31:0] crc32_reg;
     reg [31:0] final_crc32_reg;
@@ -198,9 +202,9 @@ module tpu_axi_fetch_top #(
     wire [31:0] b_col3_3 = compute_buf_sel ? b_mem1[4'd15] : b_mem0[4'd15];
 
     wire [31:0] mul_a_sel =
-        (mul_phase == 2'd0) ? a_cur0 :
-        (mul_phase == 2'd1) ? a_cur1 :
-        (mul_phase == 2'd2) ? a_cur2 : a_cur3;
+        (mul_phase == 2'd0) ? a_row0_reg :
+        (mul_phase == 2'd1) ? a_row1_reg :
+        (mul_phase == 2'd2) ? a_row2_reg : a_row3_reg;
     wire [31:0] mul_b_col0_sel =
         (mul_phase == 2'd0) ? b_col0_0 :
         (mul_phase == 2'd1) ? b_col0_1 :
@@ -426,6 +430,10 @@ module tpu_axi_fetch_top #(
             row_acc1         <= 66'd0;
             row_acc2         <= 66'd0;
             row_acc3         <= 66'd0;
+            a_row0_reg       <= 32'd0;
+            a_row1_reg       <= 32'd0;
+            a_row2_reg       <= 32'd0;
+            a_row3_reg       <= 32'd0;
             store_elem_index <= 4'd0;
             store_word_sel   <= 2'd0;
             compute_buf_sel  <= 1'b0;
@@ -685,6 +693,32 @@ module tpu_axi_fetch_top #(
                     row_acc1  <= 66'd0;
                     row_acc2  <= 66'd0;
                     row_acc3  <= 66'd0;
+                    case (compute_index[1:0])
+                        2'd0: begin
+                            a_row0_reg <= compute_buf_sel ? a_mem1[4'd0]  : a_mem0[4'd0];
+                            a_row1_reg <= compute_buf_sel ? a_mem1[4'd1]  : a_mem0[4'd1];
+                            a_row2_reg <= compute_buf_sel ? a_mem1[4'd2]  : a_mem0[4'd2];
+                            a_row3_reg <= compute_buf_sel ? a_mem1[4'd3]  : a_mem0[4'd3];
+                        end
+                        2'd1: begin
+                            a_row0_reg <= compute_buf_sel ? a_mem1[4'd4]  : a_mem0[4'd4];
+                            a_row1_reg <= compute_buf_sel ? a_mem1[4'd5]  : a_mem0[4'd5];
+                            a_row2_reg <= compute_buf_sel ? a_mem1[4'd6]  : a_mem0[4'd6];
+                            a_row3_reg <= compute_buf_sel ? a_mem1[4'd7]  : a_mem0[4'd7];
+                        end
+                        2'd2: begin
+                            a_row0_reg <= compute_buf_sel ? a_mem1[4'd8]  : a_mem0[4'd8];
+                            a_row1_reg <= compute_buf_sel ? a_mem1[4'd9]  : a_mem0[4'd9];
+                            a_row2_reg <= compute_buf_sel ? a_mem1[4'd10] : a_mem0[4'd10];
+                            a_row3_reg <= compute_buf_sel ? a_mem1[4'd11] : a_mem0[4'd11];
+                        end
+                        default: begin
+                            a_row0_reg <= compute_buf_sel ? a_mem1[4'd12] : a_mem0[4'd12];
+                            a_row1_reg <= compute_buf_sel ? a_mem1[4'd13] : a_mem0[4'd13];
+                            a_row2_reg <= compute_buf_sel ? a_mem1[4'd14] : a_mem0[4'd14];
+                            a_row3_reg <= compute_buf_sel ? a_mem1[4'd15] : a_mem0[4'd15];
+                        end
+                    endcase
                     state     <= ST_COMPUTE_MUL;
                 end
 
