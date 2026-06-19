@@ -739,10 +739,32 @@ module tpu_axi_fetch_top #(
                     end
 `endif
                     if (mul_phase == 2'd3) begin
-                        c_mem[{row_idx, 2'b00} + 4'd0] <= row_next_col0;
-                        c_mem[{row_idx, 2'b00} + 4'd1] <= row_next_col1;
-                        c_mem[{row_idx, 2'b00} + 4'd2] <= row_next_col2;
-                        c_mem[{row_idx, 2'b00} + 4'd3] <= row_next_col3;
+                        case (row_idx)
+                            2'd0: begin
+                                c_mem[4'd0] <= row_next_col0;
+                                c_mem[4'd1] <= row_next_col1;
+                                c_mem[4'd2] <= row_next_col2;
+                                c_mem[4'd3] <= row_next_col3;
+                            end
+                            2'd1: begin
+                                c_mem[4'd4] <= row_next_col0;
+                                c_mem[4'd5] <= row_next_col1;
+                                c_mem[4'd6] <= row_next_col2;
+                                c_mem[4'd7] <= row_next_col3;
+                            end
+                            2'd2: begin
+                                c_mem[4'd8] <= row_next_col0;
+                                c_mem[4'd9] <= row_next_col1;
+                                c_mem[4'd10] <= row_next_col2;
+                                c_mem[4'd11] <= row_next_col3;
+                            end
+                            default: begin
+                                c_mem[4'd12] <= row_next_col0;
+                                c_mem[4'd13] <= row_next_col1;
+                                c_mem[4'd14] <= row_next_col2;
+                                c_mem[4'd15] <= row_next_col3;
+                            end
+                        endcase
                         mul_phase <= 2'd0;
                         if (compute_index == 5'd3) begin
                             if (prefetch_needed && !prefetch_valid) begin
