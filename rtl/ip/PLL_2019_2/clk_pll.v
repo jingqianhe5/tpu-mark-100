@@ -3,6 +3,7 @@
 module clk_pll (
     output cpu_clk,
     output sys_clk,
+    output clk_out3,
     input  resetn,
     output locked,
     input  clk_in1
@@ -11,6 +12,7 @@ module clk_pll (
     clk_pll_clk_wiz inst (
         .cpu_clk  (cpu_clk),
         .sys_clk  (sys_clk),
+        .clk_out3 (clk_out3),
         .resetn   (resetn),
         .locked   (locked),
         .clk_in1  (clk_in1)
@@ -21,6 +23,7 @@ endmodule
 module clk_pll_clk_wiz (
     output cpu_clk,
     output sys_clk,
+    output clk_out3,
     input  resetn,
     output locked,
     input  clk_in1
@@ -30,6 +33,7 @@ module clk_pll_clk_wiz (
     wire clkfbout_buf;
     wire cpu_clk_unbuf;
     wire sys_clk_unbuf;
+    wire clk_out3_unbuf;
     MMCME2_ADV #(
         .BANDWIDTH            ("OPTIMIZED"),
         .CLKOUT4_CASCADE      ("FALSE"),
@@ -78,7 +82,7 @@ module clk_pll_clk_wiz (
         .CLKOUT0B             (),
         .CLKOUT1              (sys_clk_unbuf),
         .CLKOUT1B             (),
-        .CLKOUT2              (),
+        .CLKOUT2              (clk_out3_unbuf),
         .CLKOUT2B             (),
         .CLKOUT3              (),
         .CLKOUT3B             (),
@@ -120,6 +124,11 @@ module clk_pll_clk_wiz (
     BUFG clkout2_buf (
         .I (sys_clk_unbuf),
         .O (sys_clk)
+    );
+
+    BUFG clkout3_buf (
+        .I (clk_out3_unbuf),
+        .O (clk_out3)
     );
 
 endmodule

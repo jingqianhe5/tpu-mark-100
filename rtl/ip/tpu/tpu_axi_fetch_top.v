@@ -127,6 +127,11 @@ module tpu_axi_fetch_top #(
     reg [31:0] a_row1_reg;
     reg [31:0] a_row2_reg;
     reg [31:0] a_row3_reg;
+    reg [31:0] mul_a_reg;
+    reg [31:0] mul_b0_reg;
+    reg [31:0] mul_b1_reg;
+    reg [31:0] mul_b2_reg;
+    reg [31:0] mul_b3_reg;
 
     reg [31:0] crc32_reg;
     reg [31:0] final_crc32_reg;
@@ -201,46 +206,24 @@ module tpu_axi_fetch_top #(
     wire [31:0] b_col3_2 = compute_buf_sel ? b_mem1[4'd11] : b_mem0[4'd11];
     wire [31:0] b_col3_3 = compute_buf_sel ? b_mem1[4'd15] : b_mem0[4'd15];
 
-    wire [31:0] mul_a_sel =
-        (mul_phase == 2'd0) ? a_row0_reg :
-        (mul_phase == 2'd1) ? a_row1_reg :
-        (mul_phase == 2'd2) ? a_row2_reg : a_row3_reg;
-    wire [31:0] mul_b_col0_sel =
-        (mul_phase == 2'd0) ? b_col0_0 :
-        (mul_phase == 2'd1) ? b_col0_1 :
-        (mul_phase == 2'd2) ? b_col0_2 : b_col0_3;
-    wire [31:0] mul_b_col1_sel =
-        (mul_phase == 2'd0) ? b_col1_0 :
-        (mul_phase == 2'd1) ? b_col1_1 :
-        (mul_phase == 2'd2) ? b_col1_2 : b_col1_3;
-    wire [31:0] mul_b_col2_sel =
-        (mul_phase == 2'd0) ? b_col2_0 :
-        (mul_phase == 2'd1) ? b_col2_1 :
-        (mul_phase == 2'd2) ? b_col2_2 : b_col2_3;
-    wire [31:0] mul_b_col3_sel =
-        (mul_phase == 2'd0) ? b_col3_0 :
-        (mul_phase == 2'd1) ? b_col3_1 :
-        (mul_phase == 2'd2) ? b_col3_2 : b_col3_3;
-
     wire [63:0] mul_col0_prod;
     wire [63:0] mul_col1_prod;
     wire [63:0] mul_col2_prod;
     wire [63:0] mul_col3_prod;
 
-    mul_lut_u32 u_mul_col0 (.a(mul_a_sel), .b(mul_b_col0_sel), .y(mul_col0_prod));
-    mul_lut_u32 u_mul_col1 (.a(mul_a_sel), .b(mul_b_col1_sel), .y(mul_col1_prod));
-    mul_lut_u32 u_mul_col2 (.a(mul_a_sel), .b(mul_b_col2_sel), .y(mul_col2_prod));
-    mul_lut_u32 u_mul_col3 (.a(mul_a_sel), .b(mul_b_col3_sel), .y(mul_col3_prod));
+    mul_lut_u32 u_mul_col0 (.a(mul_a_reg), .b(mul_b0_reg), .y(mul_col0_prod));
+    mul_lut_u32 u_mul_col1 (.a(mul_a_reg), .b(mul_b1_reg), .y(mul_col1_prod));
+    mul_lut_u32 u_mul_col2 (.a(mul_a_reg), .b(mul_b2_reg), .y(mul_col2_prod));
+    mul_lut_u32 u_mul_col3 (.a(mul_a_reg), .b(mul_b3_reg), .y(mul_col3_prod));
 
-    wire first_product = (mul_phase == 2'd0);
     wire [65:0] mul_term0 = {2'd0, mul_col0_prod};
     wire [65:0] mul_term1 = {2'd0, mul_col1_prod};
     wire [65:0] mul_term2 = {2'd0, mul_col2_prod};
     wire [65:0] mul_term3 = {2'd0, mul_col3_prod};
-    wire [65:0] row_next_col0 = first_product ? mul_term0 : (row_acc0 + mul_term0);
-    wire [65:0] row_next_col1 = first_product ? mul_term1 : (row_acc1 + mul_term1);
-    wire [65:0] row_next_col2 = first_product ? mul_term2 : (row_acc2 + mul_term2);
-    wire [65:0] row_next_col3 = first_product ? mul_term3 : (row_acc3 + mul_term3);
+    wire [65:0] row_next_col0 = row_acc0 + mul_term0;
+    wire [65:0] row_next_col1 = row_acc1 + mul_term1;
+    wire [65:0] row_next_col2 = row_acc2 + mul_term2;
+    wire [65:0] row_next_col3 = row_acc3 + mul_term3;
 
     function [31:0] select_c_word;
         input [65:0] value;
@@ -406,7 +389,7 @@ module tpu_axi_fetch_top #(
     end
 `endif
 
-    always @(posedge clk or negedge rst_n) begin
+    always @(posedge clk) begin
         if (!rst_n) begin
             state        <= ST_IDLE;
             busy         <= 1'b0;
@@ -434,6 +417,11 @@ module tpu_axi_fetch_top #(
             a_row1_reg       <= 32'd0;
             a_row2_reg       <= 32'd0;
             a_row3_reg       <= 32'd0;
+            mul_a_reg        <= 32'd0;
+            mul_b0_reg       <= 32'd0;
+            mul_b1_reg       <= 32'd0;
+            mul_b2_reg       <= 32'd0;
+            mul_b3_reg       <= 32'd0;
             store_elem_index <= 4'd0;
             store_word_sel   <= 2'd0;
             compute_buf_sel  <= 1'b0;
@@ -590,6 +578,11 @@ module tpu_axi_fetch_top #(
                     row_acc1      <= 66'd0;
                     row_acc2      <= 66'd0;
                     row_acc3      <= 66'd0;
+                    mul_a_reg     <= 32'd0;
+                    mul_b0_reg    <= 32'd0;
+                    mul_b1_reg    <= 32'd0;
+                    mul_b2_reg    <= 32'd0;
+                    mul_b3_reg    <= 32'd0;
                     store_elem_index <= 4'd0;
                     store_word_sel   <= 2'd0;
                     for (i = 0; i < 16; i = i + 1) begin
@@ -699,26 +692,34 @@ module tpu_axi_fetch_top #(
                             a_row1_reg <= compute_buf_sel ? a_mem1[4'd1]  : a_mem0[4'd1];
                             a_row2_reg <= compute_buf_sel ? a_mem1[4'd2]  : a_mem0[4'd2];
                             a_row3_reg <= compute_buf_sel ? a_mem1[4'd3]  : a_mem0[4'd3];
+                            mul_a_reg  <= compute_buf_sel ? a_mem1[4'd0]  : a_mem0[4'd0];
                         end
                         2'd1: begin
                             a_row0_reg <= compute_buf_sel ? a_mem1[4'd4]  : a_mem0[4'd4];
                             a_row1_reg <= compute_buf_sel ? a_mem1[4'd5]  : a_mem0[4'd5];
                             a_row2_reg <= compute_buf_sel ? a_mem1[4'd6]  : a_mem0[4'd6];
                             a_row3_reg <= compute_buf_sel ? a_mem1[4'd7]  : a_mem0[4'd7];
+                            mul_a_reg  <= compute_buf_sel ? a_mem1[4'd4]  : a_mem0[4'd4];
                         end
                         2'd2: begin
                             a_row0_reg <= compute_buf_sel ? a_mem1[4'd8]  : a_mem0[4'd8];
                             a_row1_reg <= compute_buf_sel ? a_mem1[4'd9]  : a_mem0[4'd9];
                             a_row2_reg <= compute_buf_sel ? a_mem1[4'd10] : a_mem0[4'd10];
                             a_row3_reg <= compute_buf_sel ? a_mem1[4'd11] : a_mem0[4'd11];
+                            mul_a_reg  <= compute_buf_sel ? a_mem1[4'd8]  : a_mem0[4'd8];
                         end
                         default: begin
                             a_row0_reg <= compute_buf_sel ? a_mem1[4'd12] : a_mem0[4'd12];
                             a_row1_reg <= compute_buf_sel ? a_mem1[4'd13] : a_mem0[4'd13];
                             a_row2_reg <= compute_buf_sel ? a_mem1[4'd14] : a_mem0[4'd14];
                             a_row3_reg <= compute_buf_sel ? a_mem1[4'd15] : a_mem0[4'd15];
+                            mul_a_reg  <= compute_buf_sel ? a_mem1[4'd12] : a_mem0[4'd12];
                         end
                     endcase
+                    mul_b0_reg <= b_col0_0;
+                    mul_b1_reg <= b_col1_0;
+                    mul_b2_reg <= b_col2_0;
+                    mul_b3_reg <= b_col3_0;
                     state     <= ST_COMPUTE_MUL;
                 end
 
@@ -799,7 +800,6 @@ module tpu_axi_fetch_top #(
                                 c_mem[4'd15] <= row_next_col3;
                             end
                         endcase
-                        mul_phase <= 2'd0;
                         if (compute_index == 5'd3) begin
                             if (prefetch_needed && !prefetch_valid) begin
                                 state <= ST_PREFETCH_WAIT;
@@ -808,17 +808,43 @@ module tpu_axi_fetch_top #(
                             end
                         end else begin
                             compute_index <= compute_index + 5'd1;
+                            mul_phase     <= 2'd0;
                             if (bg_read_state == BG_READ_IDLE) begin
                                 m_axi_rready <= 1'b0;
                             end
                             state         <= ST_COMPUTE_PREP;
                         end
                     end else begin
-                        mul_phase  <= mul_phase + 2'd1;
                         row_acc0  <= row_next_col0;
                         row_acc1  <= row_next_col1;
                         row_acc2  <= row_next_col2;
                         row_acc3  <= row_next_col3;
+                        case (mul_phase)
+                            2'd0: begin
+                                mul_phase  <= 2'd1;
+                                mul_a_reg  <= a_row1_reg;
+                                mul_b0_reg <= b_col0_1;
+                                mul_b1_reg <= b_col1_1;
+                                mul_b2_reg <= b_col2_1;
+                                mul_b3_reg <= b_col3_1;
+                            end
+                            2'd1: begin
+                                mul_phase  <= 2'd2;
+                                mul_a_reg  <= a_row2_reg;
+                                mul_b0_reg <= b_col0_2;
+                                mul_b1_reg <= b_col1_2;
+                                mul_b2_reg <= b_col2_2;
+                                mul_b3_reg <= b_col3_2;
+                            end
+                            default: begin
+                                mul_phase  <= 2'd3;
+                                mul_a_reg  <= a_row3_reg;
+                                mul_b0_reg <= b_col0_3;
+                                mul_b1_reg <= b_col1_3;
+                                mul_b2_reg <= b_col2_3;
+                                mul_b3_reg <= b_col3_3;
+                            end
+                        endcase
                         if (bg_read_state == BG_READ_IDLE) begin
                             m_axi_rready <= 1'b0;
                         end
