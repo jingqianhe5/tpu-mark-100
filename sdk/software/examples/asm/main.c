@@ -21,6 +21,7 @@ unsigned long CORE_CLOCKS_PER_SEC = 33000000L;
 #define MATMUL_RESULT_BYTES  (MATMUL_GROUP_NUM * 192u)
 
 #define MATMUL_TPU_START_PC      0x1c00b000u
+#define MATMUL_TPU_START_PC_UC   0xbc00b000u
 #define MATMUL_TPU_PROGRAM_WORDS 5u
 
 #define TPU_OP_SET_SRC_BASE 0x1u
@@ -32,8 +33,7 @@ unsigned long CORE_CLOCKS_PER_SEC = 33000000L;
 #define TPU_PROGRAM_WORD(op, payload) \
     ((((uint32_t)(op) & 0xfu) << 28) | ((uint32_t)(payload) & 0x0fffffffu))
 
-static const uint32_t matmul_tpu_program[MATMUL_TPU_PROGRAM_WORDS]
-    __attribute__((section(".tpu_program"), used, aligned(16))) = {
+static const uint32_t matmul_tpu_program[MATMUL_TPU_PROGRAM_WORDS] = {
     TPU_PROGRAM_WORD(TPU_OP_SET_SRC_BASE, MATMUL_SRC_BASE),
     TPU_PROGRAM_WORD(TPU_OP_SET_DST_BASE, MATMUL_RESULT_BASE),
     TPU_PROGRAM_WORD(TPU_OP_SET_GROUPS, MATMUL_GROUP_NUM),
@@ -216,10 +216,25 @@ static int wait_tpu_done(uint32_t *status_out)
     }
 }
 
+static void install_tpu_program(void)
+{
+    volatile uint32_t *dst = (volatile uint32_t *)MATMUL_TPU_START_PC_UC;
+    for (uint32_t i = 0; i < MATMUL_TPU_PROGRAM_WORDS; ++i) {
+        dst[i] = matmul_tpu_program[i];
+    }
+
+    asm volatile (
+        "dbar 0\n\t"
+        "ibar 0\n\t"
+        :
+        :
+        : "memory"
+    );
+}
+
 int main(void)
 {
-    volatile const uint32_t keep_program_live = matmul_tpu_program[0];
-    (void)keep_program_live;
+    install_tpu_program();
 
     printf("MATMUL_START\n");
 
