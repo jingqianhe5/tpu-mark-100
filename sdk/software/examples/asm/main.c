@@ -2,9 +2,6 @@
 #include <stdio.h>
 
 unsigned long UART_BASE = 0xbf000000;
-unsigned long CONFREG_TIMER_BASE = 0xbf20f100;
-unsigned long CONFREG_CLOCKS_PER_SEC = 50000000L;
-unsigned long CORE_CLOCKS_PER_SEC = 33000000L;
 
 #define UART_RBR 0x0u
 #define UART_THR 0x0u

@@ -70,17 +70,6 @@ module soc_top #(parameter SIMULATION=1'b0)
     output          ext_ram_oe_n,       //ExtRAM读使能，低有效
     output          ext_ram_we_n,       //ExtRAM写使能，低有效
 
-    // Flash is unused in the CI matmul submission. Keep these ports out of
-    // soc_top so Vivado does not require LOC/IOSTANDARD constraints for them.
-    // output [22:0]   flash_a,
-    // inout  [15:0]   flash_d,
-    // output          flash_rp_n,
-    // output          flash_vpen,
-    // output          flash_ce_n,
-    // output          flash_oe_n,
-    // output          flash_we_n,
-    // output          flash_byte_n,
-
     //------uart-------
     inout           UART_RX,            //串口RX接收
     inout           UART_TX             //串口TX发送
@@ -211,10 +200,7 @@ wire [ 4:0] cpu_debug0_wb_rf_wnum;
 wire [31:0] cpu_debug0_wb_rf_wdata;
 wire [31:0] cpu_debug0_wb_inst;
 
-wire        confreg_int;
 wire        uart0_int;
-wire        confreg_dma_finish;
-wire        confreg_fft_finish;
 wire        tpu_busy;
 wire        tpu_done;
 wire        tpu_error;
@@ -227,11 +213,10 @@ wire            lacc_tpu_cmd_ready;
 wire [1:0]      lacc_tpu_cmd_op;
 wire [31:0]     lacc_tpu_cmd_payload;
 //-----------------------------------------------------
-assign intrpt      = {6'd0, uart0_int, confreg_int};
+assign intrpt      = {6'd0, uart0_int, 1'b0};
 assign cpu_break_point = 1'b0;
 assign cpu_infor_flag  = 1'b0;
 assign cpu_reg_num     = 5'd0;
-assign confreg_fft_finish = 1'b0;
 //-----------------------------------------------------
 
 // 实例化 CPU (core_top)
@@ -239,7 +224,7 @@ assign confreg_fft_finish = 1'b0;
 core_top u_core_top (
     .aclk               (cpu_clk    ),
     .aresetn            (cpu_resetn ),
-    .intrpt             ( {6'b0,uart0_int,confreg_int} ), 
+    .intrpt             (intrpt     ), 
     
     // AXI Read Request
     .arid               (cpu_arid   ),//4
@@ -453,7 +438,7 @@ Axi_CDC u_Axi_CDC (
 );
 
 //==================================================
-// 声明 AXI Crossbar 1x4 输出扩展接口 (Slave 0 ~ Slave 3)
+// 声明 AXI Crossbar 2x2 输出接口
 // 注意: 经过 Crossbar 后，输出的 ID 位宽由 4 位增加到了 5 位
 //==================================================
 // --- S0 AXI Interface ---
@@ -470,125 +455,7 @@ wire [ 4:0] s1_axi_bid;    wire [ 1:0] s1_axi_bresp; wire        s1_axi_bvalid; 
 wire [31:0] s1_axi_araddr; wire [ 4:0] s1_axi_arid; wire [ 7:0] s1_axi_arlen; wire [ 2:0] s1_axi_arsize; wire [ 1:0] s1_axi_arburst; wire [ 0:0] s1_axi_arlock; wire [ 3:0] s1_axi_arcache; wire [ 2:0] s1_axi_arprot; wire s1_axi_arvalid; wire s1_axi_arready;
 wire [31:0] s1_axi_rdata;  wire [ 4:0] s1_axi_rid;  wire [ 1:0] s1_axi_rresp; wire        s1_axi_rlast;  wire        s1_axi_rvalid; wire        s1_axi_rready;
 
-// --- S1 AXILite 中间转换信号 ---
-wire [31:0] s1_axil_awaddr;
-wire [ 2:0] s1_axil_awprot;
-wire        s1_axil_awvalid;
-wire        s1_axil_awready;
-wire [31:0] s1_axil_wdata;
-wire [ 3:0] s1_axil_wstrb;
-wire        s1_axil_wvalid;
-wire        s1_axil_wready;
-wire [ 1:0] s1_axil_bresp;
-wire        s1_axil_bvalid;
-wire        s1_axil_bready;
-wire [31:0] s1_axil_araddr;
-wire [ 2:0] s1_axil_arprot;
-wire        s1_axil_arvalid;
-wire        s1_axil_arready;
-wire [31:0] s1_axil_rdata;
-wire [ 1:0] s1_axil_rresp;
-wire        s1_axil_rvalid;
-wire        s1_axil_rready;
-
-// --- S2 AXI Interface ---
-wire [31:0] s2_axi_awaddr; wire [ 4:0] s2_axi_awid; wire [ 7:0] s2_axi_awlen; wire [ 2:0] s2_axi_awsize; wire [ 1:0] s2_axi_awburst; wire [ 0:0] s2_axi_awlock; wire [ 3:0] s2_axi_awcache; wire [ 2:0] s2_axi_awprot; wire s2_axi_awvalid; wire s2_axi_awready;
-wire [31:0] s2_axi_wdata;  wire [ 3:0] s2_axi_wstrb; wire        s2_axi_wlast; wire        s2_axi_wvalid; wire        s2_axi_wready;
-wire [ 4:0] s2_axi_bid;    wire [ 1:0] s2_axi_bresp; wire        s2_axi_bvalid; wire        s2_axi_bready;
-wire [31:0] s2_axi_araddr; wire [ 4:0] s2_axi_arid; wire [ 7:0] s2_axi_arlen; wire [ 2:0] s2_axi_arsize; wire [ 1:0] s2_axi_arburst; wire [ 0:0] s2_axi_arlock; wire [ 3:0] s2_axi_arcache; wire [ 2:0] s2_axi_arprot; wire s2_axi_arvalid; wire s2_axi_arready;
-wire [31:0] s2_axi_rdata;  wire [ 4:0] s2_axi_rid;  wire [ 1:0] s2_axi_rresp; wire        s2_axi_rlast;  wire        s2_axi_rvalid; wire        s2_axi_rready;
-
-// --- S2 AXILite 中间转换信号 ---
-wire [31:0] s2_axil_awaddr;
-wire [ 2:0] s2_axil_awprot;
-wire        s2_axil_awvalid;
-wire        s2_axil_awready;
-wire [31:0] s2_axil_wdata;
-wire [ 3:0] s2_axil_wstrb;
-wire        s2_axil_wvalid;
-wire        s2_axil_wready;
-wire [ 1:0] s2_axil_bresp;
-wire        s2_axil_bvalid;
-wire        s2_axil_bready;
-wire [31:0] s2_axil_araddr;
-wire [ 2:0] s2_axil_arprot;
-wire        s2_axil_arvalid;
-wire        s2_axil_arready;
-wire [31:0] s2_axil_rdata;
-wire [ 1:0] s2_axil_rresp;
-wire        s2_axil_rvalid;
-wire        s2_axil_rready;
-
-// --- S3 AXI Interface (连接至 DVI) ---
-wire [31:0] s3_axi_awaddr; wire [ 4:0] s3_axi_awid; wire [ 7:0] s3_axi_awlen; wire [ 2:0] s3_axi_awsize; wire [ 1:0] s3_axi_awburst; wire [ 0:0] s3_axi_awlock; wire [ 3:0] s3_axi_awcache; wire [ 2:0] s3_axi_awprot; wire s3_axi_awvalid; wire s3_axi_awready;
-wire [31:0] s3_axi_wdata;  wire [ 3:0] s3_axi_wstrb; wire        s3_axi_wlast; wire        s3_axi_wvalid; wire        s3_axi_wready;
-wire [ 4:0] s3_axi_bid;    wire [ 1:0] s3_axi_bresp; wire        s3_axi_bvalid; wire        s3_axi_bready;
-wire [31:0] s3_axi_araddr; wire [ 4:0] s3_axi_arid; wire [ 7:0] s3_axi_arlen; wire [ 2:0] s3_axi_arsize; wire [ 1:0] s3_axi_arburst; wire [ 0:0] s3_axi_arlock; wire [ 3:0] s3_axi_arcache; wire [ 2:0] s3_axi_arprot; wire s3_axi_arvalid; wire s3_axi_arready;
-wire [31:0] s3_axi_rdata;  wire [ 4:0] s3_axi_rid;  wire [ 1:0] s3_axi_rresp; wire        s3_axi_rlast;  wire        s3_axi_rvalid; wire        s3_axi_rready;
-
-// --- S4 AXI Interface (连接至 confreg) ---
-wire [31:0] s4_axi_awaddr; wire [ 4:0] s4_axi_awid; wire [ 7:0] s4_axi_awlen; wire [ 2:0] s4_axi_awsize; wire [ 1:0] s4_axi_awburst; wire [ 0:0] s4_axi_awlock; wire [ 3:0] s4_axi_awcache; wire [ 2:0] s4_axi_awprot; wire s4_axi_awvalid; wire s4_axi_awready;
-wire [31:0] s4_axi_wdata;  wire [ 3:0] s4_axi_wstrb; wire        s4_axi_wlast; wire        s4_axi_wvalid; wire        s4_axi_wready;
-wire [ 4:0] s4_axi_bid;    wire [ 1:0] s4_axi_bresp; wire        s4_axi_bvalid; wire        s4_axi_bready;
-wire [31:0] s4_axi_araddr; wire [ 4:0] s4_axi_arid; wire [ 7:0] s4_axi_arlen; wire [ 2:0] s4_axi_arsize; wire [ 1:0] s4_axi_arburst; wire [ 0:0] s4_axi_arlock; wire [ 3:0] s4_axi_arcache; wire [ 2:0] s4_axi_arprot; wire s4_axi_arvalid; wire s4_axi_arready;
-wire [31:0] s4_axi_rdata;  wire [ 4:0] s4_axi_rid;  wire [ 1:0] s4_axi_rresp; wire        s4_axi_rlast;  wire        s4_axi_rvalid; wire        s4_axi_rready;
-
-// --- S4 AXILite 中间转换信号 ---
-wire [31:0] s4_axil_awaddr;
-wire [ 2:0] s4_axil_awprot;
-wire        s4_axil_awvalid;
-wire        s4_axil_awready;
-wire [31:0] s4_axil_wdata;
-wire [ 3:0] s4_axil_wstrb;
-wire        s4_axil_wvalid;
-wire        s4_axil_wready;
-wire [ 1:0] s4_axil_bresp;
-wire        s4_axil_bvalid;
-wire        s4_axil_bready;
-wire [31:0] s4_axil_araddr;
-wire [ 2:0] s4_axil_arprot;
-wire        s4_axil_arvalid;
-wire        s4_axil_arready;
-wire [31:0] s4_axil_rdata;
-wire [ 1:0] s4_axil_rresp;
-wire        s4_axil_rvalid;
-wire        s4_axil_rready;
-
-// --- S5 AXI Interface (连接至 DMA Config) ---
-wire [31:0] s5_axi_awaddr; wire [ 4:0] s5_axi_awid; wire [ 7:0] s5_axi_awlen; wire [ 2:0] s5_axi_awsize; wire [ 1:0] s5_axi_awburst; wire [ 0:0] s5_axi_awlock; wire [ 3:0] s5_axi_awcache; wire [ 2:0] s5_axi_awprot; wire s5_axi_awvalid; wire s5_axi_awready;
-wire [31:0] s5_axi_wdata;  wire [ 3:0] s5_axi_wstrb; wire        s5_axi_wlast; wire        s5_axi_wvalid; wire        s5_axi_wready;
-wire [ 4:0] s5_axi_bid;    wire [ 1:0] s5_axi_bresp; wire        s5_axi_bvalid; wire        s5_axi_bready;
-wire [31:0] s5_axi_araddr; wire [ 4:0] s5_axi_arid; wire [ 7:0] s5_axi_arlen; wire [ 2:0] s5_axi_arsize; wire [ 1:0] s5_axi_arburst; wire [ 0:0] s5_axi_arlock; wire [ 3:0] s5_axi_arcache; wire [ 2:0] s5_axi_arprot; wire s5_axi_arvalid; wire s5_axi_arready;
-wire [31:0] s5_axi_rdata;  wire [ 4:0] s5_axi_rid;  wire [ 1:0] s5_axi_rresp; wire        s5_axi_rlast;  wire        s5_axi_rvalid; wire        s5_axi_rready;
-
-// --- S6 AXI Interface (预留给扩展外设/FFT) ---
-wire [31:0] s6_axi_awaddr; wire [ 4:0] s6_axi_awid; wire [ 7:0] s6_axi_awlen; wire [ 2:0] s6_axi_awsize; wire [ 1:0] s6_axi_awburst; wire [ 0:0] s6_axi_awlock; wire [ 3:0] s6_axi_awcache; wire [ 2:0] s6_axi_awprot; wire s6_axi_awvalid; wire s6_axi_awready;
-wire [31:0] s6_axi_wdata;  wire [ 3:0] s6_axi_wstrb; wire        s6_axi_wlast; wire        s6_axi_wvalid; wire        s6_axi_wready;
-wire [ 4:0] s6_axi_bid;    wire [ 1:0] s6_axi_bresp; wire        s6_axi_bvalid; wire        s6_axi_bready;
-wire [31:0] s6_axi_araddr; wire [ 4:0] s6_axi_arid; wire [ 7:0] s6_axi_arlen; wire [ 2:0] s6_axi_arsize; wire [ 1:0] s6_axi_arburst; wire [ 0:0] s6_axi_arlock; wire [ 3:0] s6_axi_arcache; wire [ 2:0] s6_axi_arprot; wire s6_axi_arvalid; wire s6_axi_arready;
-wire [31:0] s6_axi_rdata;  wire [ 4:0] s6_axi_rid;  wire [ 1:0] s6_axi_rresp; wire        s6_axi_rlast;  wire        s6_axi_rvalid; wire        s6_axi_rready;
-
-// S6 当前未接实际从设备，固定返回避免悬空传播 X/Z
-assign s6_axi_awready = 1'b1;
-assign s6_axi_wready  = 1'b1;
-assign s6_axi_bid     = s6_axi_awid;
-assign s6_axi_bresp   = 2'b11;
-assign s6_axi_bvalid  = s6_axi_awvalid && s6_axi_wvalid;
-assign s6_axi_arready = 1'b1;
-assign s6_axi_rid     = s6_axi_arid;
-assign s6_axi_rdata   = 32'd0;
-assign s6_axi_rresp   = 2'b11;
-assign s6_axi_rlast   = 1'b1;
-assign s6_axi_rvalid  = s6_axi_arvalid;
-
-// --- S7 AXI Interface (连接至 ISP Config) ---
-wire [31:0] s7_axi_awaddr; wire [ 4:0] s7_axi_awid; wire [ 7:0] s7_axi_awlen; wire [ 2:0] s7_axi_awsize; wire [ 1:0] s7_axi_awburst; wire [ 0:0] s7_axi_awlock; wire [ 3:0] s7_axi_awcache; wire [ 2:0] s7_axi_awprot; wire s7_axi_awvalid; wire s7_axi_awready;
-wire [31:0] s7_axi_wdata;  wire [ 3:0] s7_axi_wstrb; wire        s7_axi_wlast; wire        s7_axi_wvalid; wire        s7_axi_wready;
-wire [ 4:0] s7_axi_bid;    wire [ 1:0] s7_axi_bresp; wire        s7_axi_bvalid; wire        s7_axi_bready;
-wire [31:0] s7_axi_araddr; wire [ 4:0] s7_axi_arid; wire [ 7:0] s7_axi_arlen; wire [ 2:0] s7_axi_arsize; wire [ 1:0] s7_axi_arburst; wire [ 0:0] s7_axi_arlock; wire [ 3:0] s7_axi_arcache; wire [ 2:0] s7_axi_arprot; wire s7_axi_arvalid; wire s7_axi_arready;
-wire [31:0] s7_axi_rdata;  wire [ 4:0] s7_axi_rid;  wire [ 1:0] s7_axi_rresp; wire        s7_axi_rlast;  wire        s7_axi_rvalid; wire        s7_axi_rready;
-
-// --- TPU AXI Master Interface (接往 AXI_top 主机2号口，只读 SRAM 中的 TPU 指令) ---
+// --- TPU AXI Master Interface (接往 AXI_top 第二个主机口) ---
 wire [31:0] tpu_axi_awaddr; wire [ 3:0] tpu_axi_awid; wire [ 7:0] tpu_axi_awlen; wire [ 2:0] tpu_axi_awsize; wire [ 1:0] tpu_axi_awburst; wire [ 0:0] tpu_axi_awlock; wire [ 3:0] tpu_axi_awcache; wire [ 2:0] tpu_axi_awprot; wire tpu_axi_awvalid; wire tpu_axi_awready;
 wire [31:0] tpu_axi_wdata;  wire [ 3:0] tpu_axi_wstrb; wire        tpu_axi_wlast; wire        tpu_axi_wvalid; wire        tpu_axi_wready;
 wire [ 3:0] tpu_axi_bid;    wire [ 1:0] tpu_axi_bresp; wire        tpu_axi_bvalid; wire        tpu_axi_bready;
@@ -764,9 +631,8 @@ assign tpu_axi_rlast  = tpu_sys_axi_rlast;
 assign tpu_sys_axi_rready = tpu_axi_rready;
 
 //==================================================
-// 实例化 AXI Crossbar 2x8
-// 将 CPU CDC 后的 SYS master 和 TPU host master 分发至外设/存储器。
-// DMA/ISP/DVI 不参与矩阵跑分路径，避免额外仲裁和时序负担。
+// 实例化 AXI Crossbar 2x2
+// 两个主机: CPU 和 TPU；两个从机: SRAM 和 UART。
 //==================================================
 wire [7:0] axi_top_s_bid;
 wire [7:0] axi_top_s_rid;
@@ -777,28 +643,16 @@ assign tpu_axi_rid = axi_top_s_rid[7:4];
 
 AXI_top #(
     .S_COUNT(2),
-    .M_COUNT(8),
+    .M_COUNT(2),
     .DATA_WIDTH(32),
     .ADDR_WIDTH(32),
     .S_ID_WIDTH(4),
     .M_BASE_ADDR ({
-        32'h1F500000,  // M7 isp
-        32'h1F400000,  // M6 FFT
-        32'h1F300000,  // M5 dma
-        32'h1F200000,  // M4 confreg
-        32'h1F100000,  // M3 DVI
-        32'h1F000000,  // M2 uart
-        32'h11000000,  // M1 new DVI
+        32'h1F000000,  // M1 uart
         32'h1C000000   // M0 sram
     }),
     .M_ADDR_WIDTH ({
-        32'd20,  // M7 isp 1MB
-        32'd20,  // M6 1MB
-        32'd20,  // M5 1MB
-        32'd20,  // M4 1MB
-        32'd20,  // M3 1MB
-        32'd20,  // M2 1MB
-        32'd20,  // M1 new DVI 1MB
+        32'd22,  // M1 uart + fixed boot-time SIMU flag read
         32'd23   // M0 8MB
     })
 ) u_AXI_top (
@@ -856,58 +710,58 @@ AXI_top #(
     .s_axi_rready  ( {tpu_sys_axi_rready,  sys_rready}     ),
 
     // ---------------------------------------------------------
-    // AXI Outputs (s0 ~ s7 interfaces)
+    // AXI Outputs (s0=SRAM, s1=UART)
     // ---------------------------------------------------------
-    .m_axi_awid    ( {s7_axi_awid,  s6_axi_awid,s5_axi_awid,    s4_axi_awid,    s3_axi_awid,    s2_axi_awid,    s1_axi_awid,    s0_axi_awid}    ),
-    .m_axi_awaddr  ( {s7_axi_awaddr,  s6_axi_awaddr,  s5_axi_awaddr,  s4_axi_awaddr,  s3_axi_awaddr,  s2_axi_awaddr,  s1_axi_awaddr,  s0_axi_awaddr}  ),
-    .m_axi_awlen   ( {s7_axi_awlen,   s6_axi_awlen,   s5_axi_awlen,   s4_axi_awlen,   s3_axi_awlen,   s2_axi_awlen,   s1_axi_awlen,   s0_axi_awlen}   ),
-    .m_axi_awsize  ( {s7_axi_awsize,  s6_axi_awsize,  s5_axi_awsize,  s4_axi_awsize,  s3_axi_awsize,  s2_axi_awsize,  s1_axi_awsize,  s0_axi_awsize}  ),
-    .m_axi_awburst ( {s7_axi_awburst, s6_axi_awburst, s5_axi_awburst, s4_axi_awburst, s3_axi_awburst, s2_axi_awburst, s1_axi_awburst, s0_axi_awburst} ),
-    .m_axi_awlock  ( {s7_axi_awlock,  s6_axi_awlock,  s5_axi_awlock,  s4_axi_awlock,  s3_axi_awlock,  s2_axi_awlock,  s1_axi_awlock,  s0_axi_awlock}  ),
-    .m_axi_awcache ( {s7_axi_awcache, s6_axi_awcache, s5_axi_awcache, s4_axi_awcache, s3_axi_awcache, s2_axi_awcache, s1_axi_awcache, s0_axi_awcache} ),
-    .m_axi_awprot  ( {s7_axi_awprot,  s6_axi_awprot,  s5_axi_awprot,  s4_axi_awprot,  s3_axi_awprot,  s2_axi_awprot,  s1_axi_awprot,  s0_axi_awprot}  ),
+    .m_axi_awid    ( {s1_axi_awid,    s0_axi_awid}    ),
+    .m_axi_awaddr  ( {s1_axi_awaddr,  s0_axi_awaddr}  ),
+    .m_axi_awlen   ( {s1_axi_awlen,   s0_axi_awlen}   ),
+    .m_axi_awsize  ( {s1_axi_awsize,  s0_axi_awsize}  ),
+    .m_axi_awburst ( {s1_axi_awburst, s0_axi_awburst} ),
+    .m_axi_awlock  ( {s1_axi_awlock,  s0_axi_awlock}  ),
+    .m_axi_awcache ( {s1_axi_awcache, s0_axi_awcache} ),
+    .m_axi_awprot  ( {s1_axi_awprot,  s0_axi_awprot}  ),
     .m_axi_awqos   ( ),
     .m_axi_awregion( ),
     .m_axi_awuser  ( ),
-    .m_axi_awvalid ( {s7_axi_awvalid, s6_axi_awvalid, s5_axi_awvalid, s4_axi_awvalid, s3_axi_awvalid, s2_axi_awvalid, s1_axi_awvalid, s0_axi_awvalid} ),
-    .m_axi_awready ( {s7_axi_awready, s6_axi_awready, s5_axi_awready, s4_axi_awready, s3_axi_awready, s2_axi_awready, s1_axi_awready, s0_axi_awready} ),
+    .m_axi_awvalid ( {s1_axi_awvalid, s0_axi_awvalid} ),
+    .m_axi_awready ( {s1_axi_awready, s0_axi_awready} ),
     
-    .m_axi_wdata   ( {s7_axi_wdata,   s6_axi_wdata,   s5_axi_wdata,   s4_axi_wdata,   s3_axi_wdata,   s2_axi_wdata,   s1_axi_wdata,   s0_axi_wdata}   ),
-    .m_axi_wstrb   ( {s7_axi_wstrb,   s6_axi_wstrb,   s5_axi_wstrb,   s4_axi_wstrb,   s3_axi_wstrb,   s2_axi_wstrb,   s1_axi_wstrb,   s0_axi_wstrb}   ),
-    .m_axi_wlast   ( {s7_axi_wlast,   s6_axi_wlast,   s5_axi_wlast,   s4_axi_wlast,   s3_axi_wlast,   s2_axi_wlast,   s1_axi_wlast,   s0_axi_wlast}   ),
+    .m_axi_wdata   ( {s1_axi_wdata,   s0_axi_wdata}   ),
+    .m_axi_wstrb   ( {s1_axi_wstrb,   s0_axi_wstrb}   ),
+    .m_axi_wlast   ( {s1_axi_wlast,   s0_axi_wlast}   ),
     .m_axi_wuser   ( ),
-    .m_axi_wvalid  ( {s7_axi_wvalid,  s6_axi_wvalid,  s5_axi_wvalid,  s4_axi_wvalid,  s3_axi_wvalid,  s2_axi_wvalid,  s1_axi_wvalid,  s0_axi_wvalid}  ),
-    .m_axi_wready  ( {s7_axi_wready,  s6_axi_wready,  s5_axi_wready,  s4_axi_wready,  s3_axi_wready,  s2_axi_wready,  s1_axi_wready,  s0_axi_wready}  ),
+    .m_axi_wvalid  ( {s1_axi_wvalid,  s0_axi_wvalid}  ),
+    .m_axi_wready  ( {s1_axi_wready,  s0_axi_wready}  ),
     
-    .m_axi_bid     ( {s7_axi_bid,     s6_axi_bid,     s5_axi_bid,     s4_axi_bid,     s3_axi_bid,     s2_axi_bid,     s1_axi_bid,     s0_axi_bid}     ),
-    .m_axi_bresp   ( {s7_axi_bresp,   s6_axi_bresp,   s5_axi_bresp,   s4_axi_bresp,   s3_axi_bresp,   s2_axi_bresp,   s1_axi_bresp,   s0_axi_bresp}   ),
-    .m_axi_buser   ( 8'd0 ),
-    .m_axi_bvalid  ( {s7_axi_bvalid,  s6_axi_bvalid,  s5_axi_bvalid,  s4_axi_bvalid,  s3_axi_bvalid,  s2_axi_bvalid,  s1_axi_bvalid,  s0_axi_bvalid}  ),
-    .m_axi_bready  ( {s7_axi_bready,  s6_axi_bready,  s5_axi_bready,  s4_axi_bready,  s3_axi_bready,  s2_axi_bready,  s1_axi_bready,  s0_axi_bready}  ),
+    .m_axi_bid     ( {s1_axi_bid,     s0_axi_bid}     ),
+    .m_axi_bresp   ( {s1_axi_bresp,   s0_axi_bresp}   ),
+    .m_axi_buser   ( 2'd0 ),
+    .m_axi_bvalid  ( {s1_axi_bvalid,  s0_axi_bvalid}  ),
+    .m_axi_bready  ( {s1_axi_bready,  s0_axi_bready}  ),
     
-    .m_axi_arid    ( {s7_axi_arid,    s6_axi_arid,    s5_axi_arid,    s4_axi_arid,    s3_axi_arid,    s2_axi_arid,    s1_axi_arid,    s0_axi_arid}    ),
-    .m_axi_araddr  ( {s7_axi_araddr,  s6_axi_araddr,  s5_axi_araddr,  s4_axi_araddr,  s3_axi_araddr,  s2_axi_araddr,  s1_axi_araddr,  s0_axi_araddr}  ),
-    .m_axi_arlen   ( {s7_axi_arlen,   s6_axi_arlen,   s5_axi_arlen,   s4_axi_arlen,   s3_axi_arlen,   s2_axi_arlen,   s1_axi_arlen,   s0_axi_arlen}   ),
-    .m_axi_arsize  ( {s7_axi_arsize,  s6_axi_arsize,  s5_axi_arsize,  s4_axi_arsize,  s3_axi_arsize,  s2_axi_arsize,  s1_axi_arsize,  s0_axi_arsize}  ),
-    .m_axi_arburst ( {s7_axi_arburst, s6_axi_arburst, s5_axi_arburst, s4_axi_arburst, s3_axi_arburst, s2_axi_arburst, s1_axi_arburst, s0_axi_arburst} ),
-    .m_axi_arlock  ( {s7_axi_arlock,  s6_axi_arlock,  s5_axi_arlock,  s4_axi_arlock,  s3_axi_arlock,  s2_axi_arlock,  s1_axi_arlock,  s0_axi_arlock}  ),
+    .m_axi_arid    ( {s1_axi_arid,    s0_axi_arid}    ),
+    .m_axi_araddr  ( {s1_axi_araddr,  s0_axi_araddr}  ),
+    .m_axi_arlen   ( {s1_axi_arlen,   s0_axi_arlen}   ),
+    .m_axi_arsize  ( {s1_axi_arsize,  s0_axi_arsize}  ),
+    .m_axi_arburst ( {s1_axi_arburst, s0_axi_arburst} ),
+    .m_axi_arlock  ( {s1_axi_arlock,  s0_axi_arlock}  ),
 
-    .m_axi_arcache ( {s7_axi_arcache, s6_axi_arcache, s5_axi_arcache, s4_axi_arcache, s3_axi_arcache, s2_axi_arcache, s1_axi_arcache, s0_axi_arcache} ),
-    .m_axi_arprot  ( {s7_axi_arprot,  s6_axi_arprot,  s5_axi_arprot,  s4_axi_arprot,  s3_axi_arprot,  s2_axi_arprot,  s1_axi_arprot,  s0_axi_arprot}  ),
+    .m_axi_arcache ( {s1_axi_arcache, s0_axi_arcache} ),
+    .m_axi_arprot  ( {s1_axi_arprot,  s0_axi_arprot}  ),
     .m_axi_arqos   ( ),
     .m_axi_arregion( ),
     .m_axi_aruser  ( ),
-    .m_axi_arvalid ( {s7_axi_arvalid, s6_axi_arvalid, s5_axi_arvalid, s4_axi_arvalid, s3_axi_arvalid, s2_axi_arvalid, s1_axi_arvalid, s0_axi_arvalid} ),
-    .m_axi_arready ( {s7_axi_arready, s6_axi_arready, s5_axi_arready, s4_axi_arready, s3_axi_arready, s2_axi_arready, s1_axi_arready, s0_axi_arready} ),
+    .m_axi_arvalid ( {s1_axi_arvalid, s0_axi_arvalid} ),
+    .m_axi_arready ( {s1_axi_arready, s0_axi_arready} ),
     
-    .m_axi_rid     ( {s7_axi_rid,     s6_axi_rid,     s5_axi_rid,     s4_axi_rid,     s3_axi_rid,     s2_axi_rid,     s1_axi_rid,     s0_axi_rid}     ),
-    .m_axi_rdata   ( {s7_axi_rdata,   s6_axi_rdata,   s5_axi_rdata,   s4_axi_rdata,   s3_axi_rdata,   s2_axi_rdata,   s1_axi_rdata,   s0_axi_rdata}   ),
-    .m_axi_rresp   ( {s7_axi_rresp,   s6_axi_rresp,   s5_axi_rresp,   s4_axi_rresp,   s3_axi_rresp,   s2_axi_rresp,   s1_axi_rresp,   s0_axi_rresp}   ),
-    .m_axi_rlast   ( {s7_axi_rlast,   s6_axi_rlast,   s5_axi_rlast,   s4_axi_rlast,   s3_axi_rlast,   s2_axi_rlast,   s1_axi_rlast,   s0_axi_rlast}   ),
-    .m_axi_ruser   ( 8'd0 ),
+    .m_axi_rid     ( {s1_axi_rid,     s0_axi_rid}     ),
+    .m_axi_rdata   ( {s1_axi_rdata,   s0_axi_rdata}   ),
+    .m_axi_rresp   ( {s1_axi_rresp,   s0_axi_rresp}   ),
+    .m_axi_rlast   ( {s1_axi_rlast,   s0_axi_rlast}   ),
+    .m_axi_ruser   ( 2'd0 ),
 
-    .m_axi_rvalid  ( {s7_axi_rvalid,  s6_axi_rvalid,  s5_axi_rvalid,  s4_axi_rvalid,  s3_axi_rvalid,  s2_axi_rvalid,  s1_axi_rvalid,  s0_axi_rvalid}  ),
-    .m_axi_rready  ( {s7_axi_rready,  s6_axi_rready,  s5_axi_rready,  s4_axi_rready,  s3_axi_rready,  s2_axi_rready,  s1_axi_rready,  s0_axi_rready}  )
+    .m_axi_rvalid  ( {s1_axi_rvalid,  s0_axi_rvalid}  ),
+    .m_axi_rready  ( {s1_axi_rready,  s0_axi_rready}  )
 );
 
 //==================================================
@@ -981,7 +835,7 @@ axi_wrap_ram_sp_ext u_axi_wrap_ram_sp_ext (
 );
 
 //==================================================
-// 实例化 AXI UART 控制器 (连接至 S2 端口)
+// 实例化 AXI UART 控制器 (连接至 S1 端口)
 //==================================================
 wire UART_CTS, UART_RTS;
 wire UART_DTR, UART_DSR;
@@ -1021,43 +875,43 @@ axi_uart_controller u_axi_uart_controller (
     .clk             (sys_clk         ),
     .rst_n           (sys_resetn      ),
 
-    // AXI Slave Interface (Connect to S2)
-    .axi_s_awid      (s2_axi_awid     ),
-    .axi_s_awaddr    (s2_axi_awaddr   ),
-    .axi_s_awlen     (s2_axi_awlen    ),
-    .axi_s_awsize    (s2_axi_awsize   ),
-    .axi_s_awburst   (s2_axi_awburst  ),
-    .axi_s_awlock    ({1'b0, s2_axi_awlock}), // 锁宽扩展适配
-    .axi_s_awcache   (s2_axi_awcache  ),
-    .axi_s_awprot    (s2_axi_awprot   ),
-    .axi_s_awvalid   (s2_axi_awvalid  ),
-    .axi_s_awready   (s2_axi_awready  ),
-    .axi_s_wid       (s2_axi_awid     ),      
-    .axi_s_wdata     (s2_axi_wdata    ),
-    .axi_s_wstrb     (s2_axi_wstrb    ),
-    .axi_s_wlast     (s2_axi_wlast    ),
-    .axi_s_wvalid    (s2_axi_wvalid   ),
-    .axi_s_wready    (s2_axi_wready   ),
-    .axi_s_bid       (s2_axi_bid      ),
-    .axi_s_bresp     (s2_axi_bresp    ),
-    .axi_s_bvalid    (s2_axi_bvalid   ),
-    .axi_s_bready    (s2_axi_bready   ),
-    .axi_s_arid      (s2_axi_arid     ),
-    .axi_s_araddr    (s2_axi_araddr   ),
-    .axi_s_arlen     (s2_axi_arlen    ),
-    .axi_s_arsize    (s2_axi_arsize   ),
-    .axi_s_arburst   (s2_axi_arburst  ),
-    .axi_s_arlock    ({1'b0, s2_axi_arlock}), // 锁宽扩展适配
-    .axi_s_arcache   (s2_axi_arcache  ),
-    .axi_s_arprot    (s2_axi_arprot   ),
-    .axi_s_arvalid   (s2_axi_arvalid  ),
-    .axi_s_arready   (s2_axi_arready  ),
-    .axi_s_rid       (s2_axi_rid      ),
-    .axi_s_rdata     (s2_axi_rdata    ),
-    .axi_s_rresp     (s2_axi_rresp    ),
-    .axi_s_rlast     (s2_axi_rlast    ),
-    .axi_s_rvalid    (s2_axi_rvalid   ),
-    .axi_s_rready    (s2_axi_rready   ),
+    // AXI Slave Interface (Connect to S1)
+    .axi_s_awid      (s1_axi_awid     ),
+    .axi_s_awaddr    (s1_axi_awaddr   ),
+    .axi_s_awlen     (s1_axi_awlen    ),
+    .axi_s_awsize    (s1_axi_awsize   ),
+    .axi_s_awburst   (s1_axi_awburst  ),
+    .axi_s_awlock    ({1'b0, s1_axi_awlock}),
+    .axi_s_awcache   (s1_axi_awcache  ),
+    .axi_s_awprot    (s1_axi_awprot   ),
+    .axi_s_awvalid   (s1_axi_awvalid  ),
+    .axi_s_awready   (s1_axi_awready  ),
+    .axi_s_wid       (s1_axi_awid     ),
+    .axi_s_wdata     (s1_axi_wdata    ),
+    .axi_s_wstrb     (s1_axi_wstrb    ),
+    .axi_s_wlast     (s1_axi_wlast    ),
+    .axi_s_wvalid    (s1_axi_wvalid   ),
+    .axi_s_wready    (s1_axi_wready   ),
+    .axi_s_bid       (s1_axi_bid      ),
+    .axi_s_bresp     (s1_axi_bresp    ),
+    .axi_s_bvalid    (s1_axi_bvalid   ),
+    .axi_s_bready    (s1_axi_bready   ),
+    .axi_s_arid      (s1_axi_arid     ),
+    .axi_s_araddr    (s1_axi_araddr   ),
+    .axi_s_arlen     (s1_axi_arlen    ),
+    .axi_s_arsize    (s1_axi_arsize   ),
+    .axi_s_arburst   (s1_axi_arburst  ),
+    .axi_s_arlock    ({1'b0, s1_axi_arlock}),
+    .axi_s_arcache   (s1_axi_arcache  ),
+    .axi_s_arprot    (s1_axi_arprot   ),
+    .axi_s_arvalid   (s1_axi_arvalid  ),
+    .axi_s_arready   (s1_axi_arready  ),
+    .axi_s_rid       (s1_axi_rid      ),
+    .axi_s_rdata     (s1_axi_rdata    ),
+    .axi_s_rresp     (s1_axi_rresp    ),
+    .axi_s_rlast     (s1_axi_rlast    ),
+    .axi_s_rvalid    (s1_axi_rvalid   ),
+    .axi_s_rready    (s1_axi_rready   ),
 
     // DMA APB Interface 
     .apb_rw_dma      (1'b0            ),  .apb_psel_dma    (1'b0            ),
@@ -1091,118 +945,9 @@ assign video_de    = 1'b0;
 assign video_red   = 3'd0;
 assign video_green = 3'd0;
 assign video_blue  = 2'd0;
-
-assign s3_axi_awready = 1'b1;
-assign s3_axi_wready  = 1'b1;
-assign s3_axi_bid     = s3_axi_awid;
-assign s3_axi_bresp   = 2'b11;
-assign s3_axi_bvalid  = s3_axi_awvalid && s3_axi_wvalid;
-assign s3_axi_arready = 1'b1;
-assign s3_axi_rid     = s3_axi_arid;
-assign s3_axi_rdata   = 32'd0;
-assign s3_axi_rresp   = 2'b11;
-assign s3_axi_rlast   = 1'b1;
-assign s3_axi_rvalid  = s3_axi_arvalid;
-
-assign s1_axi_awready = 1'b1;
-assign s1_axi_wready  = 1'b1;
-assign s1_axi_bid     = s1_axi_awid;
-assign s1_axi_bresp   = 2'b11;
-assign s1_axi_bvalid  = s1_axi_awvalid && s1_axi_wvalid;
-assign s1_axi_arready = 1'b1;
-assign s1_axi_rid     = s1_axi_arid;
-assign s1_axi_rdata   = 32'd0;
-assign s1_axi_rresp   = 2'b11;
-assign s1_axi_rlast   = 1'b1;
-assign s1_axi_rvalid  = s1_axi_arvalid;
-
-// DMA/ISP config windows are unused in the benchmark build.
-assign s5_axi_awready = 1'b1;
-assign s5_axi_wready  = 1'b1;
-assign s5_axi_bid     = s5_axi_awid;
-assign s5_axi_bresp   = 2'b11;
-assign s5_axi_bvalid  = s5_axi_awvalid && s5_axi_wvalid;
-assign s5_axi_arready = 1'b1;
-assign s5_axi_rid     = s5_axi_arid;
-assign s5_axi_rdata   = 32'd0;
-assign s5_axi_rresp   = 2'b11;
-assign s5_axi_rlast   = 1'b1;
-assign s5_axi_rvalid  = s5_axi_arvalid;
-
-assign s7_axi_awready = 1'b1;
-assign s7_axi_wready  = 1'b1;
-assign s7_axi_bid     = s7_axi_awid;
-assign s7_axi_bresp   = 2'b11;
-assign s7_axi_bvalid  = s7_axi_awvalid && s7_axi_wvalid;
-assign s7_axi_arready = 1'b1;
-assign s7_axi_rid     = s7_axi_arid;
-assign s7_axi_rdata   = 32'd0;
-assign s7_axi_rresp   = 2'b11;
-assign s7_axi_rlast   = 1'b1;
-assign s7_axi_rvalid  = s7_axi_arvalid;
-
-//==================================================
-// 实例化 Confreg (连接至 S4 端口)
-//==================================================
-confreg #(
-    .ID_WIDTH       (5               ),
-    .SIMULATION     (SIMULATION      )
-) u_confreg (
-    .aclk           (sys_clk         ),
-    .aresetn        (sys_resetn      ),
-    .cpu_clk        (cpu_clk         ),
-    .cpu_resetn     (cpu_resetn      ),
-
-    // AXI Slave Interface (Connect to S4)
-    .s_awid         (s4_axi_awid     ),
-    .s_awaddr       (s4_axi_awaddr   ),
-    .s_awlen        (s4_axi_awlen    ),
-    .s_awsize       (s4_axi_awsize   ),
-    .s_awburst      (s4_axi_awburst  ),
-    .s_awlock       (s4_axi_awlock      ), // 位宽对齐处理
-    .s_awcache      (s4_axi_awcache  ),
-    .s_awprot       (s4_axi_awprot   ),
-    .s_awvalid      (s4_axi_awvalid  ),
-    .s_awready      (s4_axi_awready  ),
-    .s_wid          (s4_axi_awid     ), // AXI4 无 WID，沿用 AWID 保持 6bit 对齐
-    .s_wdata        (s4_axi_wdata    ),
-    .s_wstrb        (s4_axi_wstrb    ),
-    .s_wlast        (s4_axi_wlast    ),
-    .s_wvalid       (s4_axi_wvalid   ),
-    .s_wready       (s4_axi_wready   ),
-    .s_bid          (s4_axi_bid      ),
-    .s_bresp        (s4_axi_bresp    ),
-    .s_bvalid       (s4_axi_bvalid   ),
-    .s_bready       (s4_axi_bready   ),
-    .s_arid         (s4_axi_arid     ),
-    .s_araddr       (s4_axi_araddr   ),
-    .s_arlen        (s4_axi_arlen    ),
-    .s_arsize       (s4_axi_arsize   ),
-    .s_arburst      (s4_axi_arburst  ),
-    .s_arlock       (s4_axi_arlock      ), // 位宽对齐处理
-    .s_arcache      (s4_axi_arcache  ),
-    .s_arprot       (s4_axi_arprot   ),
-    .s_arvalid      (s4_axi_arvalid  ),
-    .s_arready      (s4_axi_arready  ),
-    .s_rid          (s4_axi_rid      ),
-    .s_rdata        (s4_axi_rdata    ),
-    .s_rresp        (s4_axi_rresp    ),
-    .s_rlast        (s4_axi_rlast    ),
-    .s_rvalid       (s4_axi_rvalid   ),
-    .s_rready       (s4_axi_rready   ),
-
-    // Board Peripherals 外部引脚接口
-    .led            (leds            ),
-    .dpy0           (dpy0            ),
-    .dpy1           (dpy1            ),
-    .switch         (dip_sw          ),
-    .touch_btn      (touch_btn       ),
-    .dma_finish     (confreg_dma_finish),
-    .fft_finish     (confreg_fft_finish),
-    .confreg_int    (confreg_int     )
-);
-
-assign confreg_dma_finish = 1'b0;
+assign leds        = 16'd0;
+assign dpy0        = 8'd0;
+assign dpy1        = 8'd0;
 
 // --- 例化 TPU 指令取指主机 ---
 // TPU 指令需要提前放在 SRAM 的 TPU_INSN_START_PC 地址开始处。

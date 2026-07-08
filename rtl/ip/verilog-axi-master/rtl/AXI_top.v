@@ -18,7 +18,7 @@ module AXI_top #
     // Number of AXI inputs (slave interfaces)
     parameter S_COUNT = 2,
     // Number of AXI outputs (master interfaces)
-    parameter M_COUNT = 6,
+    parameter M_COUNT = 2,
     // Width of data bus in bits
     parameter DATA_WIDTH = 32,
     // Width of address bus in bits
@@ -57,22 +57,14 @@ module AXI_top #
     parameter M_REGIONS = 1,
 
 
-    // Master interface base addresses
+    // AXI slave-side device windows
     parameter [M_COUNT*32-1:0]M_BASE_ADDR = ({
-        32'h40000000,  // M5 isp
-        32'h1F300000,  // M4 dma
-        32'h1F200000,  // M3 confreg
-        32'h20000000,  // M2 flash
         32'h1F000000,  // M1 uart
         32'h1C000000   // M0 sram
     }),
-    // Master interface address widths
+    // AXI slave-side address widths
     parameter [M_COUNT*32-1:0]M_ADDR_WIDTH = ({
-        32'd20,  // M5 1MB
-        32'd20,  // M4 1MB
-        32'd20,  // M3 1MB
-        32'd23,  // M2 8MB
-        32'd20,  // M1 1MB
+        32'd22,  // M1 4MB, covers fixed boot-time SIMU flag read
         32'd23   // M0 8MB
     }),
 

@@ -319,7 +319,7 @@ apb_mux2 u_apb_mux2
 .apb1_psel          (                   ),
 .apb1_addr          (                   ),
 .apb1_datai         (                   ),
-.apb1_datao         (32'b0              )
+.apb1_datao         (32'hffff_ffff      )
 /* verilator lint_on PINCONNECTEMPTY */                                        
 );
 
@@ -352,5 +352,4 @@ uart_top uart0
 );
 
 endmodule
-
 
