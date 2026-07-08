@@ -84,7 +84,8 @@ module tpu_axi_fetch_top #(
         ST_READ_AR        = 6'd5,  // 发 AXI AR 读取当前组 A/B 输入
         ST_READ_R         = 6'd6,  // 接收当前组 A/B 输入 burst
         ST_COMPUTE_PREP   = 6'd7,  // 准备一次完整 4x4 C 矩阵的并行乘加
-        ST_COMPUTE_MUL    = 6'd8,  // 执行 4 个 k 阶段，每拍并行更新 16 个 C 元素
+        ST_COMPUTE_MUL    = 6'd8,  // 锁存当前 k 的 16 个并行乘法结果
+        ST_COMPUTE_ACC    = 6'd9,  // 用已锁存乘积更新 16 个 C 累加器
         ST_REPORT_RESULT  = 6'd14, // 把 CRC32 回报给 CPU
         ST_HALT           = 6'd15, // 停机等待下一次 start
         ST_OUTPUT_WAIT    = 6'd18, // 结果双缓冲满时等待写回释放一个 buffer
@@ -143,7 +144,23 @@ module tpu_axi_fetch_top #(
     reg [31:0] a_mem1 [0:15]; // 输入 A 的 buffer1，用于双缓冲/预取
     reg [31:0] b_mem1 [0:15]; // 输入 B 的 buffer1，用于双缓冲/预取
     reg [65:0] c_mem [0:15];  // 输出 C，66 bit 可容纳 4 个 32x32 乘积累加
-    reg [1:0]  mul_phase;     // 当前 k 方向阶段，0..3；每拍同时更新全部 16 个 C 元素
+    reg [1:0]  mul_phase;     // 当前 k 方向阶段，0..3；每个 k 分乘法锁存和累加两拍
+    reg [63:0] mul_r00;       // 已锁存的 A[0][k] * B[k][0]
+    reg [63:0] mul_r01;       // 已锁存的 A[0][k] * B[k][1]
+    reg [63:0] mul_r02;       // 已锁存的 A[0][k] * B[k][2]
+    reg [63:0] mul_r03;       // 已锁存的 A[0][k] * B[k][3]
+    reg [63:0] mul_r10;       // 已锁存的 A[1][k] * B[k][0]
+    reg [63:0] mul_r11;       // 已锁存的 A[1][k] * B[k][1]
+    reg [63:0] mul_r12;       // 已锁存的 A[1][k] * B[k][2]
+    reg [63:0] mul_r13;       // 已锁存的 A[1][k] * B[k][3]
+    reg [63:0] mul_r20;       // 已锁存的 A[2][k] * B[k][0]
+    reg [63:0] mul_r21;       // 已锁存的 A[2][k] * B[k][1]
+    reg [63:0] mul_r22;       // 已锁存的 A[2][k] * B[k][2]
+    reg [63:0] mul_r23;       // 已锁存的 A[2][k] * B[k][3]
+    reg [63:0] mul_r30;       // 已锁存的 A[3][k] * B[k][0]
+    reg [63:0] mul_r31;       // 已锁存的 A[3][k] * B[k][1]
+    reg [63:0] mul_r32;       // 已锁存的 A[3][k] * B[k][2]
+    reg [63:0] mul_r33;       // 已锁存的 A[3][k] * B[k][3]
 
     // 写结果双缓冲。计算完成的一组 C 会被快照到 tail buffer，
     // 后台写回状态机按 head 顺序写 SRAM 并同步滚动 CRC。
@@ -218,9 +235,9 @@ module tpu_axi_fetch_top #(
     wire [31:0] bg_src_read_addr = bg_read_base ;// 预取 word 地址
     wire [3:0] bg_target_index = bg_read_index[3:0]; // 预取写入 A/B buffer 的 0..15 索引
 
-    // 4-cycle 并行矩阵乘法核心：
+    // 8-cycle 并行矩阵乘法核心：
     // 每个 mul_phase 对应一个 k，16 个乘法器同时计算 A[0..3][k] * B[k][0..3]，
-    // 并把 16 个 C 元素同时累加到 c_mem[0..15]。
+    // 下一拍再把锁存后的 16 个乘积同时累加到 c_mem[0..15]，切短布线路径。
     wire [3:0] a_k_idx0 = {2'd0, mul_phase}; // A[0][k] 在一维数组中的索引
     wire [3:0] a_k_idx1 = {2'd1, mul_phase}; // A[1][k] 在一维数组中的索引
     wire [3:0] a_k_idx2 = {2'd2, mul_phase}; // A[2][k] 在一维数组中的索引
@@ -273,22 +290,22 @@ module tpu_axi_fetch_top #(
     mul_lut_u32 u_mul_p32 (.a(a_k3), .b(b_k2), .y(mul_p32)); // C[3][2] 当前 k 乘积
     mul_lut_u32 u_mul_p33 (.a(a_k3), .b(b_k3), .y(mul_p33)); // C[3][3] 当前 k 乘积
 
-    wire [65:0] c_next0  = c_mem[4'd0]  + {2'd0, mul_p00}; // C[0][0] 本拍累加结果
-    wire [65:0] c_next1  = c_mem[4'd1]  + {2'd0, mul_p01}; // C[0][1] 本拍累加结果
-    wire [65:0] c_next2  = c_mem[4'd2]  + {2'd0, mul_p02}; // C[0][2] 本拍累加结果
-    wire [65:0] c_next3  = c_mem[4'd3]  + {2'd0, mul_p03}; // C[0][3] 本拍累加结果
-    wire [65:0] c_next4  = c_mem[4'd4]  + {2'd0, mul_p10}; // C[1][0] 本拍累加结果
-    wire [65:0] c_next5  = c_mem[4'd5]  + {2'd0, mul_p11}; // C[1][1] 本拍累加结果
-    wire [65:0] c_next6  = c_mem[4'd6]  + {2'd0, mul_p12}; // C[1][2] 本拍累加结果
-    wire [65:0] c_next7  = c_mem[4'd7]  + {2'd0, mul_p13}; // C[1][3] 本拍累加结果
-    wire [65:0] c_next8  = c_mem[4'd8]  + {2'd0, mul_p20}; // C[2][0] 本拍累加结果
-    wire [65:0] c_next9  = c_mem[4'd9]  + {2'd0, mul_p21}; // C[2][1] 本拍累加结果
-    wire [65:0] c_next10 = c_mem[4'd10] + {2'd0, mul_p22}; // C[2][2] 本拍累加结果
-    wire [65:0] c_next11 = c_mem[4'd11] + {2'd0, mul_p23}; // C[2][3] 本拍累加结果
-    wire [65:0] c_next12 = c_mem[4'd12] + {2'd0, mul_p30}; // C[3][0] 本拍累加结果
-    wire [65:0] c_next13 = c_mem[4'd13] + {2'd0, mul_p31}; // C[3][1] 本拍累加结果
-    wire [65:0] c_next14 = c_mem[4'd14] + {2'd0, mul_p32}; // C[3][2] 本拍累加结果
-    wire [65:0] c_next15 = c_mem[4'd15] + {2'd0, mul_p33}; // C[3][3] 本拍累加结果
+    wire [65:0] c_next0  = c_mem[4'd0]  + {2'd0, mul_r00}; // C[0][0] 累加锁存乘积后的结果
+    wire [65:0] c_next1  = c_mem[4'd1]  + {2'd0, mul_r01}; // C[0][1] 累加锁存乘积后的结果
+    wire [65:0] c_next2  = c_mem[4'd2]  + {2'd0, mul_r02}; // C[0][2] 累加锁存乘积后的结果
+    wire [65:0] c_next3  = c_mem[4'd3]  + {2'd0, mul_r03}; // C[0][3] 累加锁存乘积后的结果
+    wire [65:0] c_next4  = c_mem[4'd4]  + {2'd0, mul_r10}; // C[1][0] 累加锁存乘积后的结果
+    wire [65:0] c_next5  = c_mem[4'd5]  + {2'd0, mul_r11}; // C[1][1] 累加锁存乘积后的结果
+    wire [65:0] c_next6  = c_mem[4'd6]  + {2'd0, mul_r12}; // C[1][2] 累加锁存乘积后的结果
+    wire [65:0] c_next7  = c_mem[4'd7]  + {2'd0, mul_r13}; // C[1][3] 累加锁存乘积后的结果
+    wire [65:0] c_next8  = c_mem[4'd8]  + {2'd0, mul_r20}; // C[2][0] 累加锁存乘积后的结果
+    wire [65:0] c_next9  = c_mem[4'd9]  + {2'd0, mul_r21}; // C[2][1] 累加锁存乘积后的结果
+    wire [65:0] c_next10 = c_mem[4'd10] + {2'd0, mul_r22}; // C[2][2] 累加锁存乘积后的结果
+    wire [65:0] c_next11 = c_mem[4'd11] + {2'd0, mul_r23}; // C[2][3] 累加锁存乘积后的结果
+    wire [65:0] c_next12 = c_mem[4'd12] + {2'd0, mul_r30}; // C[3][0] 累加锁存乘积后的结果
+    wire [65:0] c_next13 = c_mem[4'd13] + {2'd0, mul_r31}; // C[3][1] 累加锁存乘积后的结果
+    wire [65:0] c_next14 = c_mem[4'd14] + {2'd0, mul_r32}; // C[3][2] 累加锁存乘积后的结果
+    wire [65:0] c_next15 = c_mem[4'd15] + {2'd0, mul_r33}; // C[3][3] 累加锁存乘积后的结果
 
     // c_mem 中每个结果是 66 bit。写 SRAM 时只能按 32-bit beat 写，
     // 所以每个 C 元素拆成低 32 bit、高 32 bit、最高 2 bit 三个 word。
@@ -622,6 +639,10 @@ module tpu_axi_fetch_top #(
             m_axi_araddr     <= 32'd0; // 清 AXI 读地址
             m_axi_arvalid    <= 1'b0; // 撤销 AXI 读地址 valid
             m_axi_rready     <= 1'b0; // 撤销 AXI 读数据 ready
+            mul_r00 <= 64'd0; mul_r01 <= 64'd0; mul_r02 <= 64'd0; mul_r03 <= 64'd0; // 清第 0 行锁存乘积
+            mul_r10 <= 64'd0; mul_r11 <= 64'd0; mul_r12 <= 64'd0; mul_r13 <= 64'd0; // 清第 1 行锁存乘积
+            mul_r20 <= 64'd0; mul_r21 <= 64'd0; mul_r22 <= 64'd0; mul_r23 <= 64'd0; // 清第 2 行锁存乘积
+            mul_r30 <= 64'd0; mul_r31 <= 64'd0; mul_r32 <= 64'd0; mul_r33 <= 64'd0; // 清第 3 行锁存乘积
             for (i = 0; i < 16; i = i + 1) begin
                 a_mem0[i] <= 32'd0; // 清 A buffer0 第 i 项
                 b_mem0[i] <= 32'd0; // 清 B buffer0 第 i 项
@@ -783,8 +804,8 @@ module tpu_axi_fetch_top #(
                 end
 
                 ST_COMPUTE_PREP: begin
-                    // 准备计算完整 C 矩阵。后续 4 个周期分别对应 k=0..3：
-                    // 每拍同时计算 16 个 A[row][k] * B[k][col] 并累加到 C[row][col]。
+                    // 准备计算完整 C 矩阵。后续 4 个 k 阶段分别对应 k=0..3：
+                    // 每个 k 先锁存 16 个乘积，下一拍再累加到 C[row][col]。
                     // 同时如果 AXI 读通道空闲，会启动/推进下一组预取。
                     if (bg_read_state == BG_READ_IDLE) begin
                         start_prefetch_read(); // 后台空闲时尝试发起下一组输入预取
@@ -794,12 +815,12 @@ module tpu_axi_fetch_top #(
                     compute_index <= 5'd0; // 调试/兼容计数清零，当前核心不再按行推进
                     row_idx       <= 2'd0; // 调试/兼容行号清零
                     mul_phase     <= 2'd0; // 第一拍计算 k=0
-                    state         <= ST_COMPUTE_MUL; // 下一拍进入 16 乘法器并行累加
+                    state         <= ST_COMPUTE_MUL; // 下一拍锁存 k=0 的 16 个乘法结果
                 end
 
                 ST_COMPUTE_MUL: begin
-                    // 一个周期推进一个 k 阶段。16 个乘法器同时覆盖 4 行 x 4 列：
-                    // c_mem[row*4+col] += A[row][k] * B[k][col]。
+                    // 乘法阶段：16 个乘法器同时覆盖 4 行 x 4 列，并把结果寄存下来。
+                    // 下一拍再进入累加阶段，避免乘法器输出直接打到 66-bit 加法器。
                     if (bg_read_state == BG_READ_IDLE) begin
                         start_prefetch_read(); // 后台空闲时继续尝试启动下一组预取
                     end else begin
@@ -837,6 +858,37 @@ module tpu_axi_fetch_top #(
                                  b_k2,
                                  b_k3);
                     end
+	                    if (trace_matmul_row && ((group_count_reg - groups_left) < 32'd2)) begin
+	                        $display("[tpu_mul] group=%0d k=%0d p00=%h p01=%h p02=%h p03=%h p30=%h p31=%h p32=%h p33=%h",
+	                                 group_count_reg - groups_left,
+	                                 mul_phase,
+	                                 mul_p00,
+	                                 mul_p01,
+	                                 mul_p02,
+	                                 mul_p03,
+	                                 mul_p30,
+	                                 mul_p31,
+	                                 mul_p32,
+	                                 mul_p33);
+	                    end
+`endif
+                    mul_r00 <= mul_p00; mul_r01 <= mul_p01; mul_r02 <= mul_p02; mul_r03 <= mul_p03; // 锁存第 0 行乘积
+                    mul_r10 <= mul_p10; mul_r11 <= mul_p11; mul_r12 <= mul_p12; mul_r13 <= mul_p13; // 锁存第 1 行乘积
+                    mul_r20 <= mul_p20; mul_r21 <= mul_p21; mul_r22 <= mul_p22; mul_r23 <= mul_p23; // 锁存第 2 行乘积
+                    mul_r30 <= mul_p30; mul_r31 <= mul_p31; mul_r32 <= mul_p32; mul_r33 <= mul_p33; // 锁存第 3 行乘积
+                    state   <= ST_COMPUTE_ACC; // 下一拍用寄存后的乘积更新 C
+                end
+
+                ST_COMPUTE_ACC: begin
+                    // 累加阶段：使用上一拍锁存的 16 个乘积更新 16 个 C 元素。
+                    // 这样最坏路径变成乘法器到 mul_r、mul_r 到 c_mem 两段。
+                    if (bg_read_state == BG_READ_IDLE) begin
+                        start_prefetch_read(); // 累加拍也保持下一组预取
+                    end else begin
+                        service_bg_read(); // 累加当前组的同时继续接收下一组预取数据
+                    end
+
+`ifdef SIMULATION
                     if (trace_matmul_row && ((group_count_reg - groups_left) < 32'd2)) begin
                         $display("[tpu_c] group=%0d k=%0d c0=%h c1=%h c2=%h c3=%h c12=%h c13=%h c14=%h c15=%h",
                                  group_count_reg - groups_left,
@@ -875,7 +927,7 @@ module tpu_axi_fetch_top #(
                         if (bg_read_state == BG_READ_IDLE) begin
                             m_axi_rready <= 1'b0; // 后台预取空闲时不开放读返回通道
                         end
-                        state <= ST_COMPUTE_MUL; // 继续下一个 k 阶段
+                        state <= ST_COMPUTE_MUL; // 继续下一个 k 的乘法锁存阶段
                     end
                 end
 

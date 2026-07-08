@@ -61,15 +61,16 @@ module lacc_core(
     reg        busy_reg;           // TPU 是否忙
     reg        done_reg;           // TPU 是否已经结束
     reg        error_reg;          // 是否发生错误
-    reg        result_full_reg;    // 结果缓冲区是否已满
-    reg        result_overflow_reg;// 结果是否溢出
+    reg        result_full_reg;    // CRC32 是否已经返回
+    reg        result_overflow_reg;// 兼容旧状态位，当前 CRC32 返回不会溢出
     reg [7:0]  result_count_reg;   // 已写入的 halfword 数
     reg [7:0]  error_code_reg;     // 最近一次错误码
     reg        result_raw_mode_reg; // raw 顺序写回
 
-    // 128 个 16-bit 槽位，READ 指令一次读两个 halfword 组成一个 32-bit word。
-    reg [15:0] result_buffer [0:127];
-    reg [127:0] result_valid_bits;  // 每个 halfword 对应一个有效位
+    // 当前 TPU 跑分只需要 CPU 读回最终 CRC32。完整 C 矩阵仍由 TPU 写回 SRAM，
+    // 这里不再保留 128 个 halfword 的通用结果缓存，减小 CPU 侧布线压力。
+    reg [31:0] crc_result_reg;
+    reg        crc_result_valid;
 
     reg [31:0] rsp_data_comb;      // 组合返回值
 
@@ -94,11 +95,9 @@ module lacc_core(
     wire fifo_accept  = fifo_cmd && lacc_tpu_cmd_ready;
     wire fifo_stall   = fifo_cmd && !lacc_tpu_cmd_ready;
 
-    wire [5:0] read_word_index = lacc_req_rj[5:0]; // 0~63，每个索引读两个 halfword
-    wire       read_index_bad  = 1'b0;
-    wire       read_pair_valid = !read_index_bad &&
-                                 result_valid_bits[{read_word_index, 1'b0}] &&
-                                 result_valid_bits[{read_word_index, 1'b1}];
+    wire [5:0] read_word_index = lacc_req_rj[5:0]; // 当前只允许索引 0 读 CRC32
+    wire       read_index_bad  = (read_word_index != 6'd0);
+    wire       read_pair_valid = !read_index_bad && crc_result_valid;
 
     wire [31:0] status_word = {
         8'd0,
@@ -112,10 +111,6 @@ module lacc_core(
         (done_reg | tpu_done),
         (busy_reg | tpu_busy)
     };
-
-    integer i; // 清空 result_buffer 用
-    integer lane;
-    reg [7:0] write_index;
 
     assign lacc_rsp_valid = lacc_req_valid && (!fifo_cmd || lacc_tpu_cmd_ready);
     assign lacc_rsp_rdat  = rsp_data_comb;
@@ -147,10 +142,7 @@ module lacc_core(
             if (!read_pair_valid) begin
                 rsp_data_comb = 32'd0;
             end else begin
-                rsp_data_comb = {
-                    result_buffer[{read_word_index, 1'b1}],
-                    result_buffer[{read_word_index, 1'b0}]
-                };
+                rsp_data_comb = crc_result_reg;
             end
         end
     end
@@ -165,14 +157,10 @@ module lacc_core(
             result_count_reg    <= 8'd0;
             error_code_reg      <= ERR_NONE;
             result_raw_mode_reg  <= 1'b1;
-            result_valid_bits   <= 128'd0;
+            crc_result_reg      <= 32'd0;
+            crc_result_valid    <= 1'b0;
             lacc_tpu_start      <= 1'b0;
             lacc_tpu_start_pc   <= 32'd0;
-            /* verilator lint_off BLKSEQ */
-            for (i = 0; i < 128; i = i + 1) begin
-                result_buffer[i] = 16'd0;
-            end
-            /* verilator lint_on BLKSEQ */
         end else begin
             if (start_cmd && lacc_tpu_cmd_ready) begin
                 // rj 就是 TPU 指令起始地址。
@@ -185,12 +173,8 @@ module lacc_core(
                 result_overflow_reg <= 1'b0;
                 result_count_reg    <= 8'd0;
                 error_code_reg      <= ERR_NONE;
-                result_valid_bits   <= 128'd0;
-                /* verilator lint_off BLKSEQ */
-                for (i = 0; i < 128; i = i + 1) begin
-                    result_buffer[i] = 16'd0;
-                end
-                /* verilator lint_on BLKSEQ */
+                crc_result_reg      <= 32'd0;
+                crc_result_valid    <= 1'b0;
             end else if (lacc_tpu_start && tpu_busy) begin
                 lacc_tpu_start <= 1'b0;
             end else if (fifo_stall) begin
@@ -218,13 +202,9 @@ module lacc_core(
                 result_overflow_reg <= 1'b0;
                 result_count_reg    <= 8'd0;
                 error_code_reg      <= ERR_NONE;
-                result_valid_bits   <= 128'd0;
+                crc_result_reg      <= 32'd0;
+                crc_result_valid    <= 1'b0;
                 lacc_tpu_start      <= 1'b0;
-                /* verilator lint_off BLKSEQ */
-                for (i = 0; i < 128; i = i + 1) begin
-                    result_buffer[i] = 16'd0;
-                end
-                /* verilator lint_on BLKSEQ */
             end else if (tpu_done) begin
                 busy_reg <= 1'b0;
                 done_reg <= 1'b1;
@@ -237,26 +217,12 @@ module lacc_core(
                 error_code_reg <= ERR_BAD_CMD;
             end
 
-            /* verilator lint_off BLKSEQ */
-            if (tpu_result_valid != 8'd0) begin
-                write_index = result_count_reg;
-                for (lane = 0; lane < 8; lane = lane + 1) begin
-                    if (tpu_result_valid[lane]) begin
-                        if (write_index < 8'd128) begin
-                            result_buffer[write_index[6:0]] <= tpu_result_data[16*lane +: 16];
-                            result_valid_bits[write_index[6:0]] <= 1'b1;
-                            write_index = write_index + 8'd1;
-                        end else begin
-                            result_overflow_reg <= 1'b1;
-                            error_reg           <= 1'b1;
-                            error_code_reg      <= ERR_TPU_HW;
-                        end
-                    end
-                end
-                result_count_reg <= write_index;
-                result_full_reg  <= (write_index >= 8'd96);
+            if (tpu_result_valid[1:0] == 2'b11) begin
+                crc_result_reg   <= tpu_result_data[31:0];
+                crc_result_valid <= 1'b1;
+                result_count_reg <= 8'd2;
+                result_full_reg  <= 1'b1;
             end
-            /* verilator lint_on BLKSEQ */
         end
     end
 
