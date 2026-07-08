@@ -1,56 +1,21 @@
 #include <stdint.h>
-#include <stdio.h>
 
-unsigned long UART_BASE = 0xbf000000;
+/*
+ * TPU 跑分驱动：
+ * CPU 只负责通过 LACC 清状态、启动 TPU、轮询完成、读回硬件 CRC 并通过 UART 打印。
+ * 输入地址、输出地址和 5000 组轮数都固定在 RTL 中，CPU 不搬运矩阵，也不计算 golden。
+ */
 
-#define UART_RBR 0x0u
+unsigned long UART_BASE = 0xbf000000u;
+
 #define UART_THR 0x0u
 #define UART_LSR 0x5u
-#define UART_LSR_DR 0x01u
 #define UART_LSR_THRE 0x20u
-
-#ifndef MATMUL_GROUP_NUM
-#define MATMUL_GROUP_NUM 5000u
-#endif
-
-#ifndef MATMUL_DEBUG
-#define MATMUL_DEBUG 0
-#endif
 
 #ifndef TPU_STATUS_POLL_LIMIT
 #define TPU_STATUS_POLL_LIMIT 200000000u
 #endif
 
-#ifndef MATMUL_SRC_BASE
-#define MATMUL_SRC_BASE      0x1c400000u
-#endif
-#ifndef MATMUL_RESULT_BASE
-#define MATMUL_RESULT_BASE   (MATMUL_SRC_BASE + (MATMUL_GROUP_NUM * 128u))
-#endif
-#define MATMUL_RESULT_BYTES  (MATMUL_GROUP_NUM * 192u)
-
-#define MATMUL_TPU_START_PC      0x1c00b000u
-#define MATMUL_TPU_START_PC_UC   0xbc00b000u
-#define MATMUL_TPU_PROGRAM_WORDS 5u
-
-#define TPU_OP_SET_SRC_BASE 0x1u
-#define TPU_OP_SET_DST_BASE 0x2u
-#define TPU_OP_SET_GROUPS   0x3u
-#define TPU_OP_RUN          0x4u
-#define TPU_OP_END          0xfu
-
-#define TPU_PROGRAM_WORD(op, payload) \
-    ((((uint32_t)(op) & 0xfu) << 28) | ((uint32_t)(payload) & 0x0fffffffu))
-
-static const uint32_t matmul_tpu_program[MATMUL_TPU_PROGRAM_WORDS] = {
-    TPU_PROGRAM_WORD(TPU_OP_SET_SRC_BASE, MATMUL_SRC_BASE),
-    TPU_PROGRAM_WORD(TPU_OP_SET_DST_BASE, MATMUL_RESULT_BASE),
-    TPU_PROGRAM_WORD(TPU_OP_SET_GROUPS, MATMUL_GROUP_NUM),
-    TPU_PROGRAM_WORD(TPU_OP_RUN, 0u),
-    TPU_PROGRAM_WORD(TPU_OP_END, 0u),
-};
-
-#define TPU_STATUS_BUSY      (1u << 0)
 #define TPU_STATUS_DONE      (1u << 1)
 #define TPU_STATUS_ERROR     (1u << 2)
 
@@ -59,6 +24,7 @@ static const uint32_t matmul_tpu_program[MATMUL_TPU_PROGRAM_WORDS] = {
 #define LACC_READ_WORD       "0xC08000A4"
 #define LACC_CLEAR_WORD      "0xC0C00004"
 
+/* UART 只用来打印跑分标记和 CRC，不参与计算。 */
 static inline uint8_t uart_read_reg(uint32_t offset)
 {
     return *(volatile uint8_t *)(UART_BASE + offset);
@@ -91,87 +57,7 @@ static void uart_put_hex32(uint32_t value)
     }
 }
 
-static char uart_getc_blocking(void)
-{
-    while ((uart_read_reg(UART_LSR) & UART_LSR_DR) == 0) {
-    }
-    return (char)uart_read_reg(UART_RBR);
-}
-
-void _exit(int code)
-{
-    (void)code;
-    while (1) {
-        __asm__ __volatile__("idle 0" ::: "memory");
-    }
-}
-
-int close(int fd)
-{
-    (void)fd;
-    return -1;
-}
-
-int fstat(int fd, void *st)
-{
-    (void)fd;
-    (void)st;
-    return 0;
-}
-
-int isatty(int fd)
-{
-    (void)fd;
-    return 1;
-}
-
-long lseek(int fd, long offset, int whence)
-{
-    (void)fd;
-    (void)offset;
-    (void)whence;
-    return 0;
-}
-
-long long lseek64(int fd, long long offset, int whence)
-{
-    (void)fd;
-    (void)offset;
-    (void)whence;
-    return 0;
-}
-
-int read(int fd, void *buf, unsigned int count)
-{
-    if (fd != 0 || buf == 0 || count == 0) {
-        return -1;
-    }
-
-    char *p = (char *)buf;
-    for (unsigned int i = 0; i < count; i++) {
-        char ch = uart_getc_blocking();
-        if (ch == '\r') {
-            ch = '\n';
-        }
-        p[i] = ch;
-        if (ch == '\n') {
-            return (int)(i + 1);
-        }
-    }
-    return (int)count;
-}
-
-int write(int fd, const void *buf, unsigned int count)
-{
-    (void)fd;
-    const char *p = (const char *)buf;
-    for (unsigned int i = 0; i < count; i++) {
-        uart_putc(p[i]);
-    }
-    return (int)count;
-}
-
-static inline uint32_t tpu_start(uint32_t start_pc)
+static inline uint32_t tpu_start(void)
 {
     uint32_t status;
     asm volatile (
@@ -179,7 +65,7 @@ static inline uint32_t tpu_start(uint32_t start_pc)
         ".word " LACC_START_WORD "\n\t"
         "move %0, $r4\n\t"
         : "=r"(status)
-        : "r"(start_pc)
+        : "r"(0u)
         : "$r4", "$r5", "memory"
     );
     return status;
@@ -246,45 +132,17 @@ static int wait_tpu_done(uint32_t *status_out)
     }
 }
 
-static void install_tpu_program(void)
-{
-    volatile uint32_t *dst = (volatile uint32_t *)MATMUL_TPU_START_PC_UC;
-    for (uint32_t i = 0; i < MATMUL_TPU_PROGRAM_WORDS; ++i) {
-        dst[i] = matmul_tpu_program[i];
-    }
-
-    asm volatile (
-        "dbar 0\n\t"
-        "ibar 0\n\t"
-        :
-        :
-        : "memory"
-    );
-}
-
 int main(void)
 {
-    install_tpu_program();
-
-    uint32_t status = tpu_clear();
-#if MATMUL_DEBUG
-    printf("DBG_CLEAR=%08x\n", status);
-#endif
-
     uart_puts_raw("MATMUL_START\n");
 
+    uint32_t status = tpu_clear();
+
     if ((status & TPU_STATUS_ERROR) == 0) {
-        status = tpu_start(MATMUL_TPU_START_PC);
-#if MATMUL_DEBUG
-        printf("DBG_START=%08x\n", status);
-#endif
+        status = tpu_start();
     }
     if ((status & TPU_STATUS_ERROR) == 0) {
-        int wait_rc = wait_tpu_done(&status);
-#if MATMUL_DEBUG
-        printf("DBG_WAIT_RC=%08x\n", (uint32_t)wait_rc);
-        printf("DBG_STATUS=%08x\n", status);
-#endif
+        (void)wait_tpu_done(&status);
     }
 
     const uint32_t crc = tpu_read_pair(0);

@@ -486,12 +486,8 @@ wire [135:0]    tpu_lacc_cmd_fifo_dout;
 wire [1:0]      tpu_lacc_cmd_op_tpu;
 wire [31:0]     tpu_lacc_cmd_payload_tpu;
 wire            tpu_lacc_cmd_is_start;
-wire            tpu_lacc_cmd_is_ub_write;
 wire            tpu_lacc_cmd_fifo_wr_en;
 wire            tpu_lacc_cmd_fifo_rd_en;
-wire            tpu_ub_host_wr_valid;
-wire [15:0]     tpu_ub_host_wr_addr;
-wire [15:0]     tpu_ub_host_wr_data;
 
 wire            tpu_result_fifo_full;
 wire            tpu_result_fifo_empty;
@@ -505,7 +501,6 @@ reg [1:0]       tpu_done_sync_cpu;
 reg [1:0]       tpu_error_sync_cpu;
 
 localparam [1:0] TPU_LACC_CMD_START    = 2'd1;
-localparam [1:0] TPU_LACC_CMD_UB_WRITE = 2'd2;
 
 assign lacc_tpu_cmd_ready =
     !tpu_lacc_cmd_fifo_full && !tpu_lacc_cmd_fifo_wr_rst_busy;
@@ -518,8 +513,6 @@ assign tpu_lacc_cmd_op_tpu      = tpu_lacc_cmd_fifo_dout[135:134];
 assign tpu_lacc_cmd_payload_tpu = tpu_lacc_cmd_fifo_dout[31:0];
 assign tpu_lacc_cmd_is_start =
     tpu_lacc_cmd_fifo_valid && (tpu_lacc_cmd_op_tpu == TPU_LACC_CMD_START);
-assign tpu_lacc_cmd_is_ub_write =
-    tpu_lacc_cmd_fifo_valid && (tpu_lacc_cmd_op_tpu == TPU_LACC_CMD_UB_WRITE);
 assign tpu_lacc_cmd_fifo_rd_en =
     tpu_lacc_cmd_fifo_valid &&
     !tpu_lacc_cmd_fifo_rd_rst_busy &&
@@ -528,10 +521,6 @@ assign tpu_lacc_cmd_fifo_rd_en =
 assign tpu_start_final =
     tpu_lacc_cmd_fifo_rd_en && tpu_lacc_cmd_is_start;
 assign tpu_start_pc_final = tpu_lacc_cmd_payload_tpu;
-assign tpu_ub_host_wr_valid =
-    tpu_lacc_cmd_fifo_rd_en && tpu_lacc_cmd_is_ub_write;
-assign tpu_ub_host_wr_addr = tpu_lacc_cmd_payload_tpu[31:16];
-assign tpu_ub_host_wr_data = tpu_lacc_cmd_payload_tpu[15:0];
 
 wire tpu_result_fifo_wr_en =
     (tpu_infer_result_valid_tpu != 8'd0) &&
@@ -965,9 +954,6 @@ tpu_axi_fetch_top #(
     .error                (tpu_error_tpu),
     .pc_current           (tpu_pc_current),
     .last_ins             (tpu_last_ins),
-    .ub_wr_ext_valid      (tpu_ub_host_wr_valid),
-    .ub_wr_ext_addr       (tpu_ub_host_wr_addr),
-    .ub_wr_ext_data       (tpu_ub_host_wr_data),
 
     .m_axi_awid           (tpu_axi_awid),
     .m_axi_awaddr         (tpu_axi_awaddr),

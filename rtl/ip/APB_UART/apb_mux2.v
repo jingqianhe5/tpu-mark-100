@@ -34,6 +34,7 @@ THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 `define APB_DEV0  6'h00 
 
 `define APB_DEV1  6'h1e
+`define BOOT_SIMU_FLAG_ADDR 20'h0f500
 `timescale 1ns/1ps
 module apb_mux2 (
 clk,
@@ -133,6 +134,8 @@ wire [23:0]high_24b_wr;
 wire [23:0]high_24b_rd;
 wire [7:0]apb_datao ;
 wire dma_grant;
+wire boot_simu_flag_req;
+wire [31:0]boot_simu_flag_data;
 
 arb_2_1 arb_2_1(.clk(clk), .rst_n(rst_n), .valid0(apb_valid_cpu), .valid1(apb_valid_dma), .dma_grant(dma_grant));
 
@@ -142,7 +145,15 @@ assign apb_psel         = dma_grant ? apb_psel_dma:apb_psel_cpu;
 assign apb_enab         = dma_grant ? apb_enab_dma:apb_enab_cpu; 
 assign apb_datai        = dma_grant ? apb_wdata_dma[7:0]:apb_datai_cpu; 
 assign high_24b_wr      = dma_grant ? apb_wdata_dma[31:8]:apb_high_24b_wr;  
-assign high_24b_rd      = apb1_req  ? apb1_datao[31:8] :  24'h0;
+assign boot_simu_flag_req = (apb_addr == `BOOT_SIMU_FLAG_ADDR);
+`ifdef SIMU
+assign boot_simu_flag_data = 32'h0000_0001;
+`else
+assign boot_simu_flag_data = 32'h0000_0000;
+`endif
+
+assign high_24b_rd      = boot_simu_flag_req ? boot_simu_flag_data[31:8] :
+                          apb1_req ? apb1_datao[31:8] : 24'h0;
 
 assign apb_word_trans_cpu = dma_grant  ? 1'h0: apb1_req;
 
@@ -166,8 +177,9 @@ assign apb_ack = apb0_req ? apb0_ack :
                  apb1_req ? apb1_ack : 
                  1'b0;
 
-assign apb_datao = apb0_req ? apb0_datao : 
-                   apb1_req ? apb1_datao[7:0] : 
+assign apb_datao = boot_simu_flag_req ? boot_simu_flag_data[7:0] :
+                   apb0_req ? apb0_datao :
+                   apb1_req ? apb1_datao[7:0] :
                    8'b0;
 
 
