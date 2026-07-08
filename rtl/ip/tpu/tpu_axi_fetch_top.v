@@ -354,51 +354,6 @@ module tpu_axi_fetch_top #(
         end
     endfunction
 
-    task enqueue_c_next_result;
-        begin
-            if (!c_wr_tail_sel) begin
-                c_wr_mem0[4'd0]  <= c_next0;  // 快照 C[0][0]
-                c_wr_mem0[4'd1]  <= c_next1;  // 快照 C[0][1]
-                c_wr_mem0[4'd2]  <= c_next2;  // 快照 C[0][2]
-                c_wr_mem0[4'd3]  <= c_next3;  // 快照 C[0][3]
-                c_wr_mem0[4'd4]  <= c_next4;  // 快照 C[1][0]
-                c_wr_mem0[4'd5]  <= c_next5;  // 快照 C[1][1]
-                c_wr_mem0[4'd6]  <= c_next6;  // 快照 C[1][2]
-                c_wr_mem0[4'd7]  <= c_next7;  // 快照 C[1][3]
-                c_wr_mem0[4'd8]  <= c_next8;  // 快照 C[2][0]
-                c_wr_mem0[4'd9]  <= c_next9;  // 快照 C[2][1]
-                c_wr_mem0[4'd10] <= c_next10; // 快照 C[2][2]
-                c_wr_mem0[4'd11] <= c_next11; // 快照 C[2][3]
-                c_wr_mem0[4'd12] <= c_next12; // 快照 C[3][0]
-                c_wr_mem0[4'd13] <= c_next13; // 快照 C[3][1]
-                c_wr_mem0[4'd14] <= c_next14; // 快照 C[3][2]
-                c_wr_mem0[4'd15] <= c_next15; // 快照 C[3][3]
-                c_wr_addr0       <= active_dst_base; // 记录本组写回基地址
-                c_wr_valid0      <= 1'b1; // buffer0 入队
-            end else begin
-                c_wr_mem1[4'd0]  <= c_next0;  // 快照 C[0][0]
-                c_wr_mem1[4'd1]  <= c_next1;  // 快照 C[0][1]
-                c_wr_mem1[4'd2]  <= c_next2;  // 快照 C[0][2]
-                c_wr_mem1[4'd3]  <= c_next3;  // 快照 C[0][3]
-                c_wr_mem1[4'd4]  <= c_next4;  // 快照 C[1][0]
-                c_wr_mem1[4'd5]  <= c_next5;  // 快照 C[1][1]
-                c_wr_mem1[4'd6]  <= c_next6;  // 快照 C[1][2]
-                c_wr_mem1[4'd7]  <= c_next7;  // 快照 C[1][3]
-                c_wr_mem1[4'd8]  <= c_next8;  // 快照 C[2][0]
-                c_wr_mem1[4'd9]  <= c_next9;  // 快照 C[2][1]
-                c_wr_mem1[4'd10] <= c_next10; // 快照 C[2][2]
-                c_wr_mem1[4'd11] <= c_next11; // 快照 C[2][3]
-                c_wr_mem1[4'd12] <= c_next12; // 快照 C[3][0]
-                c_wr_mem1[4'd13] <= c_next13; // 快照 C[3][1]
-                c_wr_mem1[4'd14] <= c_next14; // 快照 C[3][2]
-                c_wr_mem1[4'd15] <= c_next15; // 快照 C[3][3]
-                c_wr_addr1       <= active_dst_base; // 记录本组写回基地址
-                c_wr_valid1      <= 1'b1; // buffer1 入队
-            end
-            c_wr_tail_sel <= ~c_wr_tail_sel; // tail 前进，保持写回顺序
-        end
-    endtask
-
     task enqueue_c_mem_result;
         begin
             if (!c_wr_tail_sel) begin
@@ -914,12 +869,7 @@ module tpu_axi_fetch_top #(
                     c_mem[4'd15] <= c_next15; // 更新 C[3][3] 的当前 k 累加结果
 
                     if (mul_phase == 2'd3) begin
-                        if (c_wr_queue_full) begin
-                            state <= ST_OUTPUT_WAIT; // 结果双缓冲满，等后台写回释放一个 buffer
-                        end else begin
-                            enqueue_c_next_result(); // 当前组最终 C 快照进写回队列
-                            advance_after_result_enqueue(); // 主状态机立刻推进下一组或等待最后写完
-                        end
+                        state <= ST_OUTPUT_WAIT; // 下一拍从稳定 c_mem 入队，切断乘加到写回 buffer 的长路径
                     end else begin
                         mul_phase <= mul_phase + 2'd1; // 下一拍计算下一个 k
                         if (bg_read_state == BG_READ_IDLE) begin
@@ -930,8 +880,9 @@ module tpu_axi_fetch_top #(
                 end
 
                 ST_OUTPUT_WAIT: begin
-                    // 计算结果已经在 c_mem 中稳定，但两个写回 buffer 都满了。
-                    // 等后台写回释放一个 buffer 后，把 c_mem 入队，再推进下一组。
+                    // 计算结果已经在 c_mem 中稳定。这里延后一拍再入写回 buffer，
+                    // 避免最后一次乘加组合路径直接打到 c_wr_mem，改善 sys_clk 时序。
+                    // 如果两个写回 buffer 都满了，就继续等待后台写回释放一个 buffer。
                     if (bg_read_state != BG_READ_IDLE) begin
                         service_bg_read(); // 等输出 buffer 时也继续服务未完成的输入预取
                     end
