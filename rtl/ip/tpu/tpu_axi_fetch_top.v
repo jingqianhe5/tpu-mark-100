@@ -84,13 +84,14 @@ module tpu_axi_fetch_top #(
         ST_READ_AR        = 6'd5,  // 发 AXI AR 读取当前组 A/B 输入
         ST_READ_R         = 6'd6,  // 接收当前组 A/B 输入 burst
         ST_COMPUTE_PREP   = 6'd7,  // 清 C 并锁存 k=0 的乘法输入
-        ST_COMPUTE_MUL    = 6'd8,  // 锁存 k=0 乘积，同时预装 k=1 输入
+        ST_COMPUTE_MUL    = 6'd8,  // 乘法器内部锁存 k=0 部分积，同时预装 k=1 输入
         ST_COMPUTE_ACC    = 6'd9,  // 流水累加上一组乘积，并锁存/预装后续 k
         ST_REPORT_RESULT  = 6'd14, // 把 CRC32 回报给 CPU
         ST_HALT           = 6'd15, // 停机等待下一次 start
         ST_OUTPUT_WAIT    = 6'd18, // 结果队列满时等待 CRC 释放 buffer
         ST_INPUT_WAIT     = 6'd19, // 下一组输入正在预取时等待预取完成
-        ST_WAIT_WRITES    = 6'd20; // 最后一组算完后等待后台 CRC 全部完成
+        ST_WAIT_WRITES    = 6'd20, // 最后一组算完后等待后台 CRC 全部完成
+        ST_COMPUTE_FILL   = 6'd21; // 内部流水乘法器填充拍，锁存 k=0 乘积并预装 k=2
 
     // 后台预取状态机。它和主计算状态机共用同一套 AXI 读通道，
     // 只在主状态机不发读请求时启动，用于把下一组 A/B 读入备用 buffer。
@@ -300,22 +301,22 @@ module tpu_axi_fetch_top #(
     wire [63:0] mul_p32; // A[3][k] * B[k][2]
     wire [63:0] mul_p33; // A[3][k] * B[k][3]
 
-    mul_lut_u32 u_mul_p00 (.a(mul_a0), .b(mul_b0), .y(mul_p00)); // C[0][0] 当前 k 乘积
-    mul_lut_u32 u_mul_p01 (.a(mul_a0), .b(mul_b1), .y(mul_p01)); // C[0][1] 当前 k 乘积
-    mul_lut_u32 u_mul_p02 (.a(mul_a0), .b(mul_b2), .y(mul_p02)); // C[0][2] 当前 k 乘积
-    mul_lut_u32 u_mul_p03 (.a(mul_a0), .b(mul_b3), .y(mul_p03)); // C[0][3] 当前 k 乘积
-    mul_lut_u32 u_mul_p10 (.a(mul_a1), .b(mul_b0), .y(mul_p10)); // C[1][0] 当前 k 乘积
-    mul_lut_u32 u_mul_p11 (.a(mul_a1), .b(mul_b1), .y(mul_p11)); // C[1][1] 当前 k 乘积
-    mul_lut_u32 u_mul_p12 (.a(mul_a1), .b(mul_b2), .y(mul_p12)); // C[1][2] 当前 k 乘积
-    mul_lut_u32 u_mul_p13 (.a(mul_a1), .b(mul_b3), .y(mul_p13)); // C[1][3] 当前 k 乘积
-    mul_lut_u32 u_mul_p20 (.a(mul_a2), .b(mul_b0), .y(mul_p20)); // C[2][0] 当前 k 乘积
-    mul_lut_u32 u_mul_p21 (.a(mul_a2), .b(mul_b1), .y(mul_p21)); // C[2][1] 当前 k 乘积
-    mul_lut_u32 u_mul_p22 (.a(mul_a2), .b(mul_b2), .y(mul_p22)); // C[2][2] 当前 k 乘积
-    mul_lut_u32 u_mul_p23 (.a(mul_a2), .b(mul_b3), .y(mul_p23)); // C[2][3] 当前 k 乘积
-    mul_lut_u32 u_mul_p30 (.a(mul_a3), .b(mul_b0), .y(mul_p30)); // C[3][0] 当前 k 乘积
-    mul_lut_u32 u_mul_p31 (.a(mul_a3), .b(mul_b1), .y(mul_p31)); // C[3][1] 当前 k 乘积
-    mul_lut_u32 u_mul_p32 (.a(mul_a3), .b(mul_b2), .y(mul_p32)); // C[3][2] 当前 k 乘积
-    mul_lut_u32 u_mul_p33 (.a(mul_a3), .b(mul_b3), .y(mul_p33)); // C[3][3] 当前 k 乘积
+    mul_lut_u32 u_mul_p00 (.clk(clk), .a(mul_a0), .b(mul_b0), .y(mul_p00)); // C[0][0] 当前 k 乘积
+    mul_lut_u32 u_mul_p01 (.clk(clk), .a(mul_a0), .b(mul_b1), .y(mul_p01)); // C[0][1] 当前 k 乘积
+    mul_lut_u32 u_mul_p02 (.clk(clk), .a(mul_a0), .b(mul_b2), .y(mul_p02)); // C[0][2] 当前 k 乘积
+    mul_lut_u32 u_mul_p03 (.clk(clk), .a(mul_a0), .b(mul_b3), .y(mul_p03)); // C[0][3] 当前 k 乘积
+    mul_lut_u32 u_mul_p10 (.clk(clk), .a(mul_a1), .b(mul_b0), .y(mul_p10)); // C[1][0] 当前 k 乘积
+    mul_lut_u32 u_mul_p11 (.clk(clk), .a(mul_a1), .b(mul_b1), .y(mul_p11)); // C[1][1] 当前 k 乘积
+    mul_lut_u32 u_mul_p12 (.clk(clk), .a(mul_a1), .b(mul_b2), .y(mul_p12)); // C[1][2] 当前 k 乘积
+    mul_lut_u32 u_mul_p13 (.clk(clk), .a(mul_a1), .b(mul_b3), .y(mul_p13)); // C[1][3] 当前 k 乘积
+    mul_lut_u32 u_mul_p20 (.clk(clk), .a(mul_a2), .b(mul_b0), .y(mul_p20)); // C[2][0] 当前 k 乘积
+    mul_lut_u32 u_mul_p21 (.clk(clk), .a(mul_a2), .b(mul_b1), .y(mul_p21)); // C[2][1] 当前 k 乘积
+    mul_lut_u32 u_mul_p22 (.clk(clk), .a(mul_a2), .b(mul_b2), .y(mul_p22)); // C[2][2] 当前 k 乘积
+    mul_lut_u32 u_mul_p23 (.clk(clk), .a(mul_a2), .b(mul_b3), .y(mul_p23)); // C[2][3] 当前 k 乘积
+    mul_lut_u32 u_mul_p30 (.clk(clk), .a(mul_a3), .b(mul_b0), .y(mul_p30)); // C[3][0] 当前 k 乘积
+    mul_lut_u32 u_mul_p31 (.clk(clk), .a(mul_a3), .b(mul_b1), .y(mul_p31)); // C[3][1] 当前 k 乘积
+    mul_lut_u32 u_mul_p32 (.clk(clk), .a(mul_a3), .b(mul_b2), .y(mul_p32)); // C[3][2] 当前 k 乘积
+    mul_lut_u32 u_mul_p33 (.clk(clk), .a(mul_a3), .b(mul_b3), .y(mul_p33)); // C[3][3] 当前 k 乘积
 
     wire [65:0] c_next0  = c_mem[4'd0]  + {2'd0, mul_r00}; // C[0][0] 累加锁存乘积后的结果
     wire [65:0] c_next1  = c_mem[4'd1]  + {2'd0, mul_r01}; // C[0][1] 累加锁存乘积后的结果
@@ -1023,12 +1024,12 @@ module tpu_axi_fetch_top #(
                     row_idx       <= 2'd0; // 调试/兼容行号清零
                     mul_phase     <= 2'd0; // 下一拍锁存 k=0 乘积，再从 k=0 开始累加
                     load_mul_operands(2'd0); // 预装 k=0 的 A[0..3][0] 和 B[0][0..3]
-                    state         <= ST_COMPUTE_MUL; // 下一拍锁存 k=0 乘积并预装 k=1
+                    state         <= ST_COMPUTE_MUL; // 下一拍乘法器锁存 k=0 部分积并预装 k=1
                 end
 
                 ST_COMPUTE_MUL: begin
-                    // 流水启动阶段：乘法器正在用 PREP 装好的 k=0 操作数计算。
-                    // 这一拍锁存 k=0 的 16 个乘积，同时把 k=1 操作数装入寄存器。
+                    // 流水启动阶段：内部乘法器本拍锁存 PREP 装好的 k=0 部分积，
+                    // 同时把 k=1 操作数装入寄存器。最终 64-bit 乘积下一拍才有效。
                     if (bg_read_state == BG_READ_IDLE) begin
                         start_prefetch_read(); // 后台空闲时继续尝试启动下一组预取
                     end else begin
@@ -1080,12 +1081,26 @@ module tpu_axi_fetch_top #(
 	                                 mul_p33);
 	                    end
 `endif
-                    mul_r00 <= mul_p00; mul_r01 <= mul_p01; mul_r02 <= mul_p02; mul_r03 <= mul_p03; // 锁存第 0 行乘积
-                    mul_r10 <= mul_p10; mul_r11 <= mul_p11; mul_r12 <= mul_p12; mul_r13 <= mul_p13; // 锁存第 1 行乘积
-                    mul_r20 <= mul_p20; mul_r21 <= mul_p21; mul_r22 <= mul_p22; mul_r23 <= mul_p23; // 锁存第 2 行乘积
-                    mul_r30 <= mul_p30; mul_r31 <= mul_p31; mul_r32 <= mul_p32; mul_r33 <= mul_p33; // 锁存第 3 行乘积
                     load_mul_operands(2'd1); // 同拍预装 k=1，下一拍 ACC 时乘法器已经在算 k=1
-                    state   <= ST_COMPUTE_ACC; // 下一拍累加 k=0，同时锁存 k=1 乘积
+                    state   <= ST_COMPUTE_FILL; // 下一拍锁存 k=0 乘积并预装 k=2
+                end
+
+                ST_COMPUTE_FILL: begin
+                    // 内部流水填充拍：此时 mul_p* 是 k=0 的最终乘积。
+                    // 先锁入 mul_r，下一拍 ACC 使用旧 mul_r 累加 k=0；同时预装 k=2，
+                    // 保持乘法器从 k=1 到 k=2 连续推进。
+                    if (bg_read_state == BG_READ_IDLE) begin
+                        start_prefetch_read();
+                    end else begin
+                        service_bg_read();
+                    end
+                    mul_r00 <= mul_p00; mul_r01 <= mul_p01; mul_r02 <= mul_p02; mul_r03 <= mul_p03;
+                    mul_r10 <= mul_p10; mul_r11 <= mul_p11; mul_r12 <= mul_p12; mul_r13 <= mul_p13;
+                    mul_r20 <= mul_p20; mul_r21 <= mul_p21; mul_r22 <= mul_p22; mul_r23 <= mul_p23;
+                    mul_r30 <= mul_p30; mul_r31 <= mul_p31; mul_r32 <= mul_p32; mul_r33 <= mul_p33;
+                    load_mul_operands(2'd2); // k=2 提前进入乘法器输入，下一拍内部锁存部分积
+                    mul_phase <= 2'd0; // 下一拍 ACC 累加 k=0
+                    state <= ST_COMPUTE_ACC;
                 end
 
                 ST_COMPUTE_ACC: begin
@@ -1136,8 +1151,8 @@ module tpu_axi_fetch_top #(
                         mul_r10 <= mul_p10; mul_r11 <= mul_p11; mul_r12 <= mul_p12; mul_r13 <= mul_p13; // 锁存下一 k 的第 1 行乘积
                         mul_r20 <= mul_p20; mul_r21 <= mul_p21; mul_r22 <= mul_p22; mul_r23 <= mul_p23; // 锁存下一 k 的第 2 行乘积
                         mul_r30 <= mul_p30; mul_r31 <= mul_p31; mul_r32 <= mul_p32; mul_r33 <= mul_p33; // 锁存下一 k 的第 3 行乘积
-                        if (mul_phase < 2'd2) begin
-                            load_mul_operands(mul_phase + 2'd2); // 预装 k+2，保持乘法器不断流
+                        if (mul_phase == 2'd0) begin
+                            load_mul_operands(2'd3); // 本拍锁存 k=1 乘积，同时预装最后一个 k=3
                         end
                         mul_phase <= mul_phase + 2'd1; // 下一拍累加下一个 k
                         if (bg_read_state == BG_READ_IDLE) begin
@@ -1261,29 +1276,43 @@ endmodule
 /* verilator lint_off DECLFILENAME */
 (* keep_hierarchy = "yes", use_dsp = "no" *) // 保持乘法器层级，并提示综合不要推 DSP
 module mul_lut_u32 (
+    input  wire        clk, // TPU 时钟，用于锁存 16x16 部分积
     input  wire [31:0] a, // 32-bit 无符号乘数 A
     input  wire [31:0] b, // 32-bit 无符号乘数 B
     output wire [63:0] y  // 64-bit 无符号乘积输出
 );
 
     // 32x32 乘法器用四个 16x16 移位加法乘法器拼成，并显式禁止 DSP。
-    // 这样综合时更倾向使用 LUT，适合想把 DSP 留给其他模块或规避 DSP 资源限制的场景。
+    // 四个 16x16 部分积先打一拍，最终 64-bit 移位相加由外层 mul_r 寄存器接住。
+    // 这样把原来的“16x16 部分积 + 64-bit 加法树”长路径切成两段，同时保持 1/cycle 吞吐。
     wire [15:0] a_lo = a[15:0];  // A 的低 16 bit
     wire [15:0] a_hi = a[31:16]; // A 的高 16 bit
     wire [15:0] b_lo = b[15:0];  // B 的低 16 bit
     wire [15:0] b_hi = b[31:16]; // B 的高 16 bit
 
-    wire [31:0] p_ll; // a_lo * b_lo，放到结果 bit[31:0]
-    wire [31:0] p_lh; // a_lo * b_hi，左移 16 bit 后加入结果
-    wire [31:0] p_hl; // a_hi * b_lo，左移 16 bit 后加入结果
-    wire [31:0] p_hh; // a_hi * b_hi，左移 32 bit 后加入结果
+    wire [31:0] p_ll_next; // a_lo * b_lo，放到结果 bit[31:0]
+    wire [31:0] p_lh_next; // a_lo * b_hi，左移 16 bit 后加入结果
+    wire [31:0] p_hl_next; // a_hi * b_lo，左移 16 bit 后加入结果
+    wire [31:0] p_hh_next; // a_hi * b_hi，左移 32 bit 后加入结果
 
-    mul_lut_u16 u_ll (.a(a_lo), .b(b_lo), .y(p_ll)); // 计算低 16x低 16 的部分积
-    mul_lut_u16 u_lh (.a(a_lo), .b(b_hi), .y(p_lh)); // 计算低 16x高 16 的部分积
-    mul_lut_u16 u_hl (.a(a_hi), .b(b_lo), .y(p_hl)); // 计算高 16x低 16 的部分积
-    mul_lut_u16 u_hh (.a(a_hi), .b(b_hi), .y(p_hh)); // 计算高 16x高 16 的部分积
+    reg [31:0] p_ll_reg; // 已锁存的低 16x低 16 部分积
+    reg [31:0] p_lh_reg; // 已锁存的低 16x高 16 部分积
+    reg [31:0] p_hl_reg; // 已锁存的高 16x低 16 部分积
+    reg [31:0] p_hh_reg; // 已锁存的高 16x高 16 部分积
 
-    assign y = {p_hh, 32'd0} + {16'd0, p_hl, 16'd0} + {16'd0, p_lh, 16'd0} + {32'd0, p_ll}; // 四个部分积按权重移位相加得到 32x32 结果
+    mul_lut_u16 u_ll (.a(a_lo), .b(b_lo), .y(p_ll_next)); // 计算低 16x低 16 的部分积
+    mul_lut_u16 u_lh (.a(a_lo), .b(b_hi), .y(p_lh_next)); // 计算低 16x高 16 的部分积
+    mul_lut_u16 u_hl (.a(a_hi), .b(b_lo), .y(p_hl_next)); // 计算高 16x低 16 的部分积
+    mul_lut_u16 u_hh (.a(a_hi), .b(b_hi), .y(p_hh_next)); // 计算高 16x高 16 的部分积
+
+    always @(posedge clk) begin
+        p_ll_reg <= p_ll_next;
+        p_lh_reg <= p_lh_next;
+        p_hl_reg <= p_hl_next;
+        p_hh_reg <= p_hh_next;
+    end
+
+    assign y = {p_hh_reg, 32'd0} + {16'd0, p_hl_reg, 16'd0} + {16'd0, p_lh_reg, 16'd0} + {32'd0, p_ll_reg}; // 四个部分积按权重移位相加得到 32x32 结果
 
 endmodule
 
