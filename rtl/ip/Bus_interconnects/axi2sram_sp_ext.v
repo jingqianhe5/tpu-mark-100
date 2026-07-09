@@ -135,7 +135,7 @@ module axi2sram_sp_ext #(
         cnt_d           = cnt_q;
         // Memory default assignments
         data_o = s_wdata;
-        be_o   = s_wstrb;
+        be_o   = {AXI_DATA_WIDTH/8{1'b1}};
         we_o   = 1'b0;
         req_o  = 1'b0;
         addr_o = 'h0;
@@ -192,12 +192,13 @@ module axi2sram_sp_ext #(
                     ax_req_d_size   = s_awsize;
                     ax_req_d_burst  = s_awburst;
                     // we've got our first w_valid so start the write process
-                    if (s_wvalid) begin
-                        req_o          = 1'b1;
-                        we_o           = 1'b1;
-                        req_addr_d     = get_next_addr(s_awaddr, s_awburst);
-                        state_d        = (s_wlast) ? SEND_B : WRITE;
-                        cnt_d          = 1;
+                if (s_wvalid) begin
+                    req_o          = 1'b1;
+                    we_o           = 1'b1;
+                    be_o           = s_wstrb;
+                    req_addr_d     = get_next_addr(s_awaddr, s_awburst);
+                    state_d        = (s_wlast) ? SEND_B : WRITE;
+                    cnt_d          = 1;
                     // we still have to wait for the first w_valid to arrive
                     end else
                         state_d = WAIT_WVALID;
@@ -212,6 +213,7 @@ module axi2sram_sp_ext #(
                 if (s_wvalid) begin
                     req_o          = 1'b1;
                     we_o           = 1'b1;
+                    be_o           = s_wstrb;
                     req_addr_d     = get_next_addr(ax_req_q_addr, ax_req_q_burst);
                     state_d        = (s_wlast) ? SEND_B : WRITE;
                     cnt_d          = 1;
@@ -273,6 +275,7 @@ module axi2sram_sp_ext #(
                 if (s_wvalid) begin
                     req_o         = 1'b1;
                     we_o          = 1'b1;
+                    be_o          = s_wstrb;
                     addr_o        = req_addr_q;
                     // save the request address for the next cycle
                     req_addr_d = get_next_addr(req_addr_q, ax_req_q_burst);
