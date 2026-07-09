@@ -101,42 +101,27 @@ module axi2sram_sp_ext #(
     localparam              FIXED       = 2'b00;
     localparam              INCR        = 2'b01;
     localparam              WRAP        = 2'b10;
+    localparam [AXI_ADDR_WIDTH-1:0] ADDR_STEP = {{(AXI_ADDR_WIDTH-LOG_NR_BYTES-1){1'b0}}, 1'b1, {LOG_NR_BYTES{1'b0}}};
     
     reg [AXI_ADDR_WIDTH-1:0] req_addr_d, req_addr_q;
     reg [7:0]                cnt_d, cnt_q;
     reg [AXI_DATA_WIDTH-1:0] read_data_q;
 
-    function automatic [AXI_ADDR_WIDTH-1:0] get_wrap_boundary;
-        input [AXI_ADDR_WIDTH-1:0] unaligned_address;
-        input [7:0] len;
+    function automatic [AXI_ADDR_WIDTH-1:0] get_next_addr;
+        input [AXI_ADDR_WIDTH-1:0] addr;
+        input [1:0] burst;
     begin
-        get_wrap_boundary = 'h0;
-        //  for wrapping transfers ax_len can only be of size 1, 3, 7 or 15
-        if (len == 4'b1)
-            get_wrap_boundary[AXI_ADDR_WIDTH-1:1+LOG_NR_BYTES] = unaligned_address[AXI_ADDR_WIDTH-1:1+LOG_NR_BYTES];
-        else if (len == 4'b11)
-            get_wrap_boundary[AXI_ADDR_WIDTH-1:2+LOG_NR_BYTES] = unaligned_address[AXI_ADDR_WIDTH-1:2+LOG_NR_BYTES];
-        else if (len == 4'b111)
-            get_wrap_boundary[AXI_ADDR_WIDTH-1:3+LOG_NR_BYTES] = unaligned_address[AXI_ADDR_WIDTH-3:2+LOG_NR_BYTES];
-        else if (len == 4'b1111)
-            get_wrap_boundary[AXI_ADDR_WIDTH-1:4+LOG_NR_BYTES] = unaligned_address[AXI_ADDR_WIDTH-3:4+LOG_NR_BYTES];
+        if (burst == FIXED) begin
+            get_next_addr = addr;
+        end else begin
+            // 本工程 SRAM 访问只使用递增 burst。预先保存下一拍地址，
+            // 避免每拍在外部 SRAM 地址输出前走通用 WRAP 地址计算长链。
+            get_next_addr = addr + ADDR_STEP;
+        end
     end
     endfunction
 
-    reg [AXI_ADDR_WIDTH-1:0] aligned_address;
-    reg [AXI_ADDR_WIDTH-1:0] wrap_boundary;
-    reg [AXI_ADDR_WIDTH-1:0] upper_wrap_boundary;
-    reg [AXI_ADDR_WIDTH-1:0] cons_addr;
-
     always @ (*) begin
-        // address generation
-        aligned_address = {ax_req_q_addr[AXI_ADDR_WIDTH-1:LOG_NR_BYTES], {{LOG_NR_BYTES}{1'b0}}};
-        wrap_boundary = get_wrap_boundary(ax_req_q_addr, ax_req_q_len);
-        // this will overflow
-        upper_wrap_boundary = wrap_boundary + ((ax_req_q_len + 1) << LOG_NR_BYTES);
-        // calculate consecutive address
-        cons_addr = aligned_address + (cnt_q << LOG_NR_BYTES);
-
         // Transaction attributes
         // default assignments
         state_d         = state_q;
@@ -189,7 +174,7 @@ module axi2sram_sp_ext #(
                     req_o          = 1'b1;
                     addr_o         = s_araddr;
                     // save the address
-                    req_addr_d     = s_araddr;
+                    req_addr_d     = get_next_addr(s_araddr, s_arburst);
                     // save the ar_len
                     cnt_d          = 1;
                 // ------------
@@ -209,6 +194,7 @@ module axi2sram_sp_ext #(
                     if (s_wvalid) begin
                         req_o          = 1'b1;
                         we_o           = 1'b1;
+                        req_addr_d     = get_next_addr(s_awaddr, s_awburst);
                         state_d        = (s_wlast) ? SEND_B : WRITE;
                         cnt_d          = 1;
                     // we still have to wait for the first w_valid to arrive
@@ -225,6 +211,7 @@ module axi2sram_sp_ext #(
                 if (s_wvalid) begin
                     req_o          = 1'b1;
                     we_o           = 1'b1;
+                    req_addr_d     = get_next_addr(ax_req_q_addr, ax_req_q_burst);
                     state_d        = (s_wlast) ? SEND_B : WRITE;
                     cnt_d          = 1;
                 end
@@ -245,19 +232,7 @@ module axi2sram_sp_ext #(
                         addr_o  = 'h0;
                         state_d = IDLE;
                     end else begin
-                        case (ax_req_q_burst)
-                            FIXED, INCR: addr_o = cons_addr;
-                            WRAP: begin
-                                if (cons_addr == upper_wrap_boundary) begin
-                                    addr_o = wrap_boundary;
-                                end else if (cons_addr > upper_wrap_boundary) begin
-                                    addr_o = ax_req_q_addr + ((cnt_q - ax_req_q_len) << LOG_NR_BYTES);
-                                end else begin
-                                    addr_o = cons_addr;
-                                end
-                            end
-                        endcase
-                        req_addr_d = addr_o;
+                        req_addr_d = get_next_addr(req_addr_q, ax_req_q_burst);
                         cnt_d      = cnt_q + 1;
                         state_d    = READ;
                     end
@@ -273,26 +248,12 @@ module axi2sram_sp_ext #(
                 // Next address generation
                 // ----------------------------
                 // handle the correct burst type
-                case (ax_req_q_burst)
-                    FIXED, INCR: addr_o = cons_addr;
-                    WRAP:  begin
-                        // check if the address reached warp boundary
-                        if (cons_addr == upper_wrap_boundary) begin
-                            addr_o = wrap_boundary;
-                        // address warped beyond boundary
-                        end else if (cons_addr > upper_wrap_boundary) begin
-                            addr_o = ax_req_q_addr + ((cnt_q - ax_req_q_len) << LOG_NR_BYTES);
-                        // we are still in the incremental regime
-                        end else begin
-                            addr_o = cons_addr;
-                        end
-                    end
-                endcase
+                addr_o = req_addr_q;
                 // we need to change the address here for the upcoming request
                 // we can decrease the counter as the master has consumed the read data
                 cnt_d = cnt_q + 1;
                 // save the request address for the next cycle
-                req_addr_d = addr_o;
+                req_addr_d = get_next_addr(req_addr_q, ax_req_q_burst);
                 state_d = READ;
             end
 
@@ -312,28 +273,9 @@ module axi2sram_sp_ext #(
                 if (s_wvalid) begin
                     req_o         = 1'b1;
                     we_o          = 1'b1;
-                    // ----------------------------
-                    // Next address generation
-                    // ----------------------------
-                    // handle the correct burst type
-                    case (ax_req_q_burst)
-
-                        FIXED, INCR: addr_o = cons_addr;
-                        WRAP:  begin
-                            // check if the address reached warp boundary
-                            if (cons_addr == upper_wrap_boundary) begin
-                                addr_o = wrap_boundary;
-                            // address warped beyond boundary
-                            end else if (cons_addr > upper_wrap_boundary) begin
-                                addr_o = ax_req_q_addr + ((cnt_q - ax_req_q_len) << LOG_NR_BYTES);
-                            // we are still in the incremental regime
-                            end else begin
-                                addr_o = cons_addr;
-                            end
-                        end
-                    endcase
+                    addr_o        = req_addr_q;
                     // save the request address for the next cycle
-                    req_addr_d = addr_o;
+                    req_addr_d = get_next_addr(req_addr_q, ax_req_q_burst);
                     // we can decrease the counter as the master has consumed the read data
                     cnt_d = cnt_q + 1;
 
