@@ -4,13 +4,13 @@
 //
 // 这个模块同时承担三件事：
 // 1. 像一个 AXI master 一样访问 SRAM：收到 start 后直接使用固定的
-//    src/dst/group 参数读取输入矩阵、写回输出矩阵，不再从 SRAM 取 TPU 小程序。
+//    src/dst/group 参数读取输入矩阵、计算输出矩阵并汇报 CRC，不再从 SRAM 取 TPU 小程序。
 // 2. 在模块内部完成 4x4 矩阵乘法。每组输入布局为 16 个 A word + 16 个 B word，
-//    共 128B；输出为 16 个 66-bit 结果，拆成 48 个 32-bit word 写回，共 192B。
+//    共 128B；输出为 16 个 66-bit 结果，拆成 48 个 32-bit word 参与 CRC。
 // 3. 写结果时同步计算 CRC32，并通过 infer_result_data/valid 返回给 CPU 的 LACC 通路。
 //
 // 注意：名字保留为 fetch_top，是因为最早它只负责取 TPU 指令；当前固定参数版本已经
-// 不再取指，只保留搬运、计算、写回和 CRC 汇报数据流。
+// 不再取指，也不再写回结果区，只保留搬运、计算和 CRC 汇报数据流。
 module tpu_axi_fetch_top #(
     parameter SYSTOLIC_ARRAY_WIDTH = 8, // 返回结果 lane 数，沿用原 TPU/LACC 接口宽度
     parameter AXI_ID_WIDTH = 4          // AXI master ID 宽度，接入 AXI_top 时使用
@@ -20,31 +20,31 @@ module tpu_axi_fetch_top #(
 
     input  wire                      start,    // CPU/LACC 发来的一拍启动脉冲
     input  wire [31:0]               start_pc, // 兼容旧 LACC 接口保留，当前固定参数模式不再使用
-    output reg                       busy,     // TPU 正在读数据/计算/写回时为 1
+    output reg                       busy,     // TPU 正在读数据/计算/CRC 时为 1
     output reg                       done,     // 整个 group 任务完成后置 1
     output reg                       error,    // AXI 响应错误或非法 opcode 时置 1
     output reg  [31:0]               pc_current, // 兼容旧 debug 接口保留，当前固定为 0
     output reg  [31:0]               last_ins,   // 兼容旧 debug 接口保留，当前固定为 0
 
     output wire [AXI_ID_WIDTH-1:0]   m_axi_awid,    // AXI 写地址 ID，固定 0
-    output reg  [31:0]               m_axi_awaddr,  // AXI 写地址，后台写回时由 current_write_base 驱动
-    output wire [7:0]                m_axi_awlen,   // AXI 写 burst 长度，写回最多合并 4 组动态设置
+    output reg  [31:0]               m_axi_awaddr,  // AXI 写地址，CRC-only 模式保持空闲
+    output wire [7:0]                m_axi_awlen,   // AXI 写 burst 长度，CRC-only 模式不使用
     output wire [2:0]                m_axi_awsize,  // AXI 写 beat 大小，3'b010 表示 4 字节
     output wire [1:0]                m_axi_awburst, // AXI 写 burst 类型，固定 INCR
     output wire [0:0]                m_axi_awlock,  // AXI 写锁信号，固定不加锁
     output wire [3:0]                m_axi_awcache, // AXI 写 cache 属性，普通可缓存/缓冲属性
     output wire [2:0]                m_axi_awprot,  // AXI 写保护属性，固定普通数据访问
-    output reg                       m_axi_awvalid, // AXI 写地址 valid，在 BG_WRITE_AW 拉高
+    output reg                       m_axi_awvalid, // AXI 写地址 valid，CRC-only 模式保持 0
     input  wire                      m_axi_awready, // AXI 写地址 ready，来自 crossbar/SRAM
     output reg  [31:0]               m_axi_wdata,   // AXI 写数据，依次输出拆分后的 C word
     output reg  [3:0]                m_axi_wstrb,   // AXI 写字节使能，固定 4'hf 全字节有效
     output wire                      m_axi_wlast,   // AXI 写最后一拍，write_index==当前 burst len 时为 1
-    output reg                       m_axi_wvalid,  // AXI 写数据 valid，在 BG_WRITE_W 拉高
+    output reg                       m_axi_wvalid,  // AXI 写数据 valid，CRC-only 模式保持 0
     input  wire                      m_axi_wready,  // AXI 写数据 ready，来自 SRAM wrapper
     input  wire [AXI_ID_WIDTH-1:0]   m_axi_bid,     // AXI 写响应 ID，本专用核不依赖该值
     input  wire [1:0]                m_axi_bresp,   // AXI 写响应状态，非 OKAY 会置 error
     input  wire                      m_axi_bvalid,  // AXI 写响应 valid，在 BG_WRITE_B 等待
-    output reg                       m_axi_bready,  // AXI 写响应 ready，等待写响应时拉高
+    output reg                       m_axi_bready,  // AXI 写响应 ready，CRC-only 模式保持 0
 
     output wire [AXI_ID_WIDTH-1:0]   m_axi_arid,    // AXI 读地址 ID，固定 0
     output reg  [31:0]               m_axi_araddr,  // AXI 读地址，读输入/预取会驱动它
@@ -76,7 +76,7 @@ module tpu_axi_fetch_top #(
     // 主状态机：
     // READ_*     : 按 active_src_base 读取当前组 A/B 输入。
     // COMPUTE_*  : 进行 4x4 矩阵乘法，同时尝试后台预取下一组。
-    // WRITE_*    : 把 16 个 66-bit 结果拆成 48 个 32-bit word 写回 SRAM。
+    // CRC_*      : 把 16 个 66-bit 结果拆成 48 个 32-bit word，只在内部滚动 CRC32。
     // REPORT     : 把最终 CRC32 送回 CPU。
     localparam [5:0]
         ST_IDLE           = 6'd0,  // 等待 CPU 发 start
@@ -88,9 +88,9 @@ module tpu_axi_fetch_top #(
         ST_COMPUTE_ACC    = 6'd9,  // 流水累加上一组乘积，并锁存/预装后续 k
         ST_REPORT_RESULT  = 6'd14, // 把 CRC32 回报给 CPU
         ST_HALT           = 6'd15, // 停机等待下一次 start
-        ST_OUTPUT_WAIT    = 6'd18, // 结果队列满时等待写回释放 buffer
+        ST_OUTPUT_WAIT    = 6'd18, // 结果队列满时等待 CRC 释放 buffer
         ST_INPUT_WAIT     = 6'd19, // 下一组输入正在预取时等待预取完成
-        ST_WAIT_WRITES    = 6'd20; // 最后一组算完后等待后台写回全部完成
+        ST_WAIT_WRITES    = 6'd20; // 最后一组算完后等待后台 CRC 全部完成
 
     // 后台预取状态机。它和主计算状态机共用同一套 AXI 读通道，
     // 只在主状态机不发读请求时启动，用于把下一组 A/B 读入备用 buffer。
@@ -100,13 +100,13 @@ module tpu_axi_fetch_top #(
         BG_READ_R    = 2'd2, // 后台预取接收 R 数据
         BG_READ_WAIT = 2'd3; // AR 握手后延一拍再拉 R ready
 
-    // 后台写回状态机。主状态机只负责把算好的 C 矩阵放进结果队列；
-    // 这里独立推进 AXI AW/W/B，最多把 4 组连续结果合成一个 burst。
+    // 后台 CRC 状态机。主状态机只负责把算好的 C 矩阵放进结果队列；
+    // 这里按原结果写回顺序取 word 计算 CRC32，不再访问 SRAM 写通道。
     localparam [1:0]
-        BG_WRITE_IDLE = 2'd0, // 后台写回空闲
-        BG_WRITE_AW   = 2'd1, // 后台写回发 AW
-        BG_WRITE_W    = 2'd2, // 后台写回发动态长度 W
-        BG_WRITE_B    = 2'd3; // 后台写回等待 B 响应
+        BG_WRITE_IDLE = 2'd0, // 后台 CRC 空闲
+        BG_WRITE_AW   = 2'd1, // 保留旧编码，CRC 模式不会进入
+        BG_WRITE_W    = 2'd2, // 后台 CRC 消费 result word
+        BG_WRITE_B    = 2'd3; // 保留旧编码，CRC 模式不会进入
 
     reg [5:0] state; // 主状态机当前状态
 
@@ -170,25 +170,24 @@ module tpu_axi_fetch_top #(
     reg [63:0] mul_r32;       // 已锁存的 A[3][k] * B[k][2]
     reg [63:0] mul_r33;       // 已锁存的 A[3][k] * B[k][3]
 
-    // 写结果 6-entry 队列。计算完成的一组 C 会被快照到 tail buffer，
-    // 后台攒够 4 组后发一个大 burst，多出的槽用于接住写回期间的新结果。
-    // 后台写回状态机按 head 顺序写 SRAM 并同步滚动 CRC。
-    reg [65:0] c_wr_mem [0:5][0:15]; // 6 个结果写回 buffer，每个保存一组 4x4 C
-    reg [31:0] c_wr_addr [0:5];      // 每个 buffer 对应的结果写回基地址
-    reg [5:0]  c_wr_valid;           // 每个 buffer 是否有待写/正在写的数据
-    reg [2:0]  c_wr_head_sel;        // 后台写回下一次应读取的 buffer，保证顺序
+    // 结果 6-entry 队列。变量名保留 c_wr_* 是为了少改接口和调试脚本；
+    // 当前官方不要求写回 SRAM，所以这些 buffer 只用于后台按顺序滚动 CRC32。
+    reg [65:0] c_wr_mem [0:5][0:15]; // 6 个结果 CRC buffer，每个保存一组 4x4 C
+    reg [31:0] c_wr_addr [0:5];      // 历史写回地址影子，CRC-only 模式不再使用
+    reg [5:0]  c_wr_valid;           // 每个 buffer 是否有待计算 CRC 的数据
+    reg [2:0]  c_wr_head_sel;        // 后台 CRC 下一次应读取的 buffer，保证顺序
     reg [2:0]  c_wr_tail_sel;        // 主计算下一次应写入的 buffer
-    reg [2:0]  c_wr_active_slot;     // 后台写回当前正在输出的 buffer
-    reg [5:0]  c_wr_head_beat_offset; // head buffer 内已经写掉的 word 数，用于 4KB 拆 burst
-    reg [1:0]  bg_write_state;   // 后台写回状态机
-    reg        write_error_latched; // 后台写回发现 B 响应错误后锁存
+    reg [2:0]  c_wr_active_slot;     // 后台 CRC 当前正在读取的 buffer
+    reg [5:0]  c_wr_head_beat_offset; // 历史 4KB 拆分偏移，CRC-only 模式不再使用
+    reg [1:0]  bg_write_state;   // 后台 CRC 状态机
+    reg        write_error_latched; // 历史写错误锁存，CRC-only 模式不会置位
     reg [7:0]  write_burst_len;      // 当前 AXI 写 burst 的 awlen，也就是 beat 数 - 1
     reg [8:0]  write_burst_beats;    // 当前 AXI 写 burst 的 beat 数
     reg [31:0] write_burst_addr;     // 当前 AXI 写 burst 的起始地址
     reg [5:0]  write_next_head_beat_offset; // 当前 burst 完成后的 head 组内偏移
 
-    // CRC 汇报路径。写回每个 result word 时滚动更新 crc32_reg，
-    // 最后一拍得到 final_crc32_reg，再通过 infer_result_data 返回给 CPU。
+    // CRC 汇报路径。后台从结果队列读取每个 result word 时滚动更新 crc32_reg，
+    // 最后一组最后一拍得到 final_crc32_reg，再通过 infer_result_data 返回给 CPU。
     reg [31:0] crc32_reg;         // 正在滚动更新的 CRC32 中间值
     reg [31:0] final_crc32_reg;   // 最后一拍写出后取反得到的最终 CRC32
     reg [31:0] infer_crc32_data_reg; // 当前只返回 32-bit CRC32
@@ -217,7 +216,7 @@ module tpu_axi_fetch_top #(
     assign m_axi_awlock  = 1'b0;                 // 不使用锁
     assign m_axi_awcache = 4'b0011;              // 普通缓存属性
     assign m_axi_awprot  = 3'b000;               // 普通非特权数据访问
-    assign m_axi_wlast   = (bg_write_state == BG_WRITE_W) && (write_index == write_burst_len); // 当前 burst 最后一个 result word
+    assign m_axi_wlast   = m_axi_wvalid && (bg_write_state == BG_WRITE_W) && (write_index == write_burst_len); // 当前 burst 最后一个 result word
 
     // AXI 读通道只读 A/B 输入矩阵：
     // arlen=31，一次 burst 读 32 个 word，也就是 128B。
@@ -552,6 +551,23 @@ module tpu_axi_fetch_top #(
         end
     endfunction
 
+    function [31:0] crc32_step_2word_le;
+        input [31:0] crc_in; // 输入 CRC 中间值
+        input [31:0] word0;  // 本拍处理的第 1 个 32-bit word
+        input [31:0] word1;  // 本拍处理的第 2 个 32-bit word
+        begin
+            crc32_step_2word_le = crc32_step_word_le(crc32_step_word_le(crc_in, word0), word1);
+        end
+    endfunction
+
+    wire [1:0] second_store_word_sel =
+        (next_store_word_sel == 2'd2) ? 2'd0 : (next_store_word_sel + 2'd1); // 一拍处理两个 word 后的 word 选择
+    wire [3:0] second_store_elem_index =
+        (next_store_word_sel == 2'd2) ? (next_store_elem_index + 4'd1) : next_store_elem_index; // 一拍处理两个 word 后的元素选择
+    wire crc_pair_last = (write_index >= 8'd46); // 48 个 word 每拍处理 2 个，46/47 是最后一对
+    wire [31:0] crc_pair_next =
+        crc32_step_2word_le(crc32_reg, current_store_word, next_store_word); // 当前拍两个 word 进入 CRC 后的结果
+
     task enqueue_c_mem_result;
         begin
             c_wr_mem[c_wr_tail_sel][4'd0]  <= c_mem[4'd0];  // 快照稳定 C[0][0]
@@ -675,70 +691,56 @@ module tpu_axi_fetch_top #(
     task service_bg_write;
         begin
             if (bg_write_state == BG_WRITE_IDLE) begin
-                m_axi_awvalid <= 1'b0; // 空闲时不发 AW
-                m_axi_wvalid  <= 1'b0; // 空闲时不发 W
-                m_axi_bready  <= 1'b0; // 空闲时不接收 B
-                if (write_start_allowed && (next_write_burst_beats != 9'd0)) begin
-                    c_wr_active_slot <= c_wr_head_sel; // 选择 FIFO 头作为当前写回 buffer
-                    write_index      <= 8'd0; // 当前合并 burst 从第 0 beat 开始
-                    store_elem_index <= beat_offset_to_elem(c_wr_head_beat_offset); // 支持从 4KB 拆分后的组内偏移继续写
-                    store_word_sel   <= beat_offset_to_word(c_wr_head_beat_offset); // 支持从元素的第几个 word 继续写
-                    write_burst_addr <= next_write_start_addr; // 锁存本次 AW 起始地址
-                    write_burst_len  <= next_write_burst_beats[7:0] - 8'd1; // 锁存 awlen，W 阶段不再动态计算
-                    write_burst_beats <= next_write_burst_beats; // 锁存本次 burst beat 数，便于 debug
-                    write_next_head_beat_offset <= next_write_head_beat_offset; // 锁存 burst 后的组内偏移
-                    bg_write_state   <= BG_WRITE_AW; // 下一步发 AW
-                end
-            end else if (bg_write_state == BG_WRITE_AW) begin
-                m_axi_awaddr  <= write_burst_addr; // 当前结果合并 burst 的写回起始地址
-                m_axi_awvalid <= 1'b1; // 发起动态长度写 burst 地址
-                m_axi_wvalid  <= 1'b0; // AW 未完成前不推 W
-                if (m_axi_awvalid && m_axi_awready) begin
-                    m_axi_awvalid  <= 1'b0; // AW 被接受
-                    m_axi_wdata    <= current_store_word; // 装载第一个 result word
-                    bg_write_state <= BG_WRITE_W; // 进入 W 通道
+                // 官方只需要最终 CRC32，不再要求把 C 结果写回 SRAM。
+                // 这里把原写回队列当作 CRC 队列使用，AXI 写通道全程保持关闭。
+                m_axi_awvalid <= 1'b0; // 不再发 AW
+                m_axi_wvalid  <= 1'b0; // 不再发 W
+                m_axi_bready  <= 1'b0; // 不再等待 B
+                if (c_wr_head_valid) begin
+                    c_wr_active_slot <= c_wr_head_sel; // 选择 FIFO 头作为当前 CRC buffer
+                    write_index      <= 8'd0; // 当前组从第 0/1 个 word 开始
+                    store_elem_index <= 4'd0; // 从 C[0] 开始
+                    store_word_sel   <= 2'd0; // 先处理 C 元素低 32 bit
+                    write_burst_len  <= 8'd47; // 兼容 debug：一组仍是 48 个 word
+                    write_burst_beats <= 9'd48; // 兼容 debug：一组 48 word
+                    bg_write_state   <= BG_WRITE_W; // 进入内部 CRC 消费状态
                 end
             end else if (bg_write_state == BG_WRITE_W) begin
-                if (!m_axi_wvalid) begin
-                    m_axi_wdata  <= current_store_word; // W 空闲时装载当前 word
-                    m_axi_wvalid <= 1'b1; // 等待 SRAM 接收
-                end else if (m_axi_wready) begin
+                m_axi_awvalid <= 1'b0; // CRC 模式不占用 AXI 写地址通道
+                m_axi_wvalid  <= 1'b0; // CRC 模式不占用 AXI 写数据通道
+                m_axi_bready  <= 1'b0; // CRC 模式不等待写响应
 `ifdef SIMULATION
-                    if (trace_matmul_write && ((group_count_reg - groups_left) < 32'd2)) begin
-                        $display("[tpu_wr] beat=%0d data=%08x last=%0b",
-                                 write_index,
-                                 m_axi_wdata,
-                                 (write_index == write_burst_len));
-                    end
+                if (trace_matmul_write && ((group_count_reg - groups_left) < 32'd2)) begin
+                    $display("[tpu_crc] beat=%0d data0=%08x data1=%08x last=%0b",
+                             write_index,
+                             current_store_word,
+                             next_store_word,
+                             crc_pair_last);
+                end
 `endif
-                    crc32_reg <= crc32_step_word_le(crc32_reg, m_axi_wdata); // 当前 word 写出成功，同步滚动 CRC
-                    if (store_group_last) begin
-                        c_wr_valid[c_wr_active_slot] <= 1'b0; // 当前 48 beat 组已经完整写出，立即释放结果槽
-                        c_wr_head_sel <= next_slot_mod6(c_wr_head_sel, 3'd1); // FIFO head 前进到下一组
-                    end
-                    if (write_index == write_burst_len) begin
-                        final_crc32_reg <= ~crc32_step_word_le(crc32_reg, m_axi_wdata); // 最后一拍写出后得到阶段性最终 CRC
-                        m_axi_wvalid    <= 1'b0; // 当前 burst 的 W 全部完成
-                        m_axi_bready    <= 1'b1; // 等待 B 响应
-                        bg_write_state  <= BG_WRITE_B; // 转入 B 通道
+                crc32_reg       <= crc_pair_next; // 本拍连续处理两个 32-bit word
+                final_crc32_reg <= ~crc_pair_next; // 保存当前进度的最终取反值，最后一对后就是全局 CRC
+                if (crc_pair_last) begin
+                    c_wr_valid[c_wr_active_slot] <= 1'b0; // 当前组 48 word 已完成 CRC，释放结果槽
+                    c_wr_head_sel <= next_slot_mod6(c_wr_head_sel, 3'd1); // FIFO head 前进到下一组
+                    if (c_wr_valid[next_slot_mod6(c_wr_active_slot, 3'd1)]) begin
+                        c_wr_active_slot <= next_slot_mod6(c_wr_active_slot, 3'd1); // 下一组已排队，继续 CRC
+                        write_index      <= 8'd0; // 新组从第 0/1 个 word 开始
+                        store_elem_index <= 4'd0; // 新组从 C[0] 开始
+                        store_word_sel   <= 2'd0; // 新组先处理低 32 bit
                     end else begin
-                        write_index      <= write_index + 8'd1; // 推进到下一 beat
-                        store_word_sel   <= next_store_word_sel; // 0/1/2 循环选择 C 拆分 word
-                        store_elem_index <= next_store_elem_index; // 每三个 word 切下一个 C 元素
-                        c_wr_active_slot <= next_store_slot; // 跨组时切到下一个结果槽
-                        m_axi_wdata      <= next_store_word; // 预装下一拍写数据
+                        bg_write_state <= BG_WRITE_IDLE; // 队列暂空，回到空闲等新结果
                     end
+                end else begin
+                    write_index      <= write_index + 8'd2; // 一拍处理两个 word
+                    store_word_sel   <= second_store_word_sel; // 前进两个 word 后的新 word 选择
+                    store_elem_index <= second_store_elem_index; // 前进两个 word 后的新元素选择
                 end
             end else begin
-                m_axi_bready <= 1'b1; // 等待写响应
-                if (m_axi_bvalid && m_axi_bready) begin
-                    m_axi_bready <= 1'b0; // B 响应已接收
-                    if (m_axi_bresp != 2'b00) begin
-                        write_error_latched <= 1'b1; // 锁存写错误，主状态机下一拍停机
-                    end
-                    c_wr_head_beat_offset <= write_next_head_beat_offset; // 若 4KB 边界切在组内，下次从该偏移继续
-                    bg_write_state <= BG_WRITE_IDLE; // 回到空闲，下一拍可写下一个 buffer
-                end
+                bg_write_state <= BG_WRITE_IDLE; // CRC 模式不会进入 AW/B，防御性回空闲
+                m_axi_awvalid  <= 1'b0;
+                m_axi_wvalid   <= 1'b0;
+                m_axi_bready   <= 1'b0;
             end
         end
     endtask
@@ -1117,14 +1119,14 @@ module tpu_axi_fetch_top #(
                 end
 
                 ST_OUTPUT_WAIT: begin
-                    // 计算结果已经在 c_mem 中稳定。这里延后一拍再入写回 buffer，
+                    // 计算结果已经在 c_mem 中稳定。这里延后一拍再入 CRC buffer，
                     // 避免最后一次乘加组合路径直接打到 c_wr_mem，改善 sys_clk 时序。
-                    // 如果两个写回 buffer 都满了，就继续等待后台写回释放一个 buffer。
+                    // 如果 CRC buffer 都满了，就继续等待后台 CRC 释放一个 buffer。
                     if (bg_read_state != BG_READ_IDLE) begin
                         service_bg_read(); // 等输出 buffer 时也继续服务未完成的输入预取
                     end
                     if (!c_wr_queue_full) begin
-                        enqueue_c_mem_result(); // 把稳定的当前组 C 放入刚释放的写回 buffer
+                        enqueue_c_mem_result(); // 把稳定的当前组 C 放入刚释放的 CRC buffer
                         advance_after_result_enqueue(); // 继续下一组或等待所有写回完成
                     end
                 end
@@ -1147,15 +1149,15 @@ module tpu_axi_fetch_top #(
                 end
 
                 ST_WAIT_WRITES: begin
-                    // 最后一组已经算完并进入写回队列，等待后台写回状态机把所有
-                    // 结果写完并滚动出最终 CRC32。
+                    // 最后一组已经算完并进入 CRC 队列，等待后台 CRC 状态机把所有
+                    // 结果 word 消费完并滚动出最终 CRC32。
                     if (c_wr_queue_empty && (bg_write_state == BG_WRITE_IDLE)) begin
-                        state <= ST_REPORT_RESULT; // 所有写回完成，可以回报 CRC
+                        state <= ST_REPORT_RESULT; // 所有 CRC 完成，可以回报 CRC
                     end
                 end
 
                 ST_REPORT_RESULT: begin
-                    // 最后一组写完后，把 final_crc32_reg 打包到低 32 bit，
+                    // 最后一组 CRC 完成后，把 final_crc32_reg 打包到低 32 bit，
                     // 通过 infer_result_valid 给 CPU/LACC 读回。
                     if (report_wait_count == 3'd0) begin
                         infer_crc32_data_reg   <= final_crc32_reg; // 低 32 bit 返回最终 CRC32

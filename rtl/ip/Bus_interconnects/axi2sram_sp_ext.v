@@ -106,6 +106,7 @@ module axi2sram_sp_ext #(
     reg [AXI_ADDR_WIDTH-1:0] req_addr_d, req_addr_q;
     reg [7:0]                cnt_d, cnt_q;
     reg [AXI_DATA_WIDTH-1:0] read_data_q;
+    wire                     read_last_now = (cnt_q == ax_req_q_len + 8'd1);
 
     function automatic [AXI_ADDR_WIDTH-1:0] get_next_addr;
         input [AXI_ADDR_WIDTH-1:0] addr;
@@ -223,13 +224,12 @@ module axi2sram_sp_ext #(
                 s_rvalid = 1'b1;
                 s_rdata  = read_data_q;
                 s_rid    = ax_req_q_id;
-                s_rlast  = (cnt_q == ax_req_q_len + 1);
+                s_rlast  = read_last_now;
                 req_o    = 1'b1;
                 addr_o   = req_addr_q;
                 if (s_rready) begin
-                    if (s_rlast) begin
+                    if (read_last_now) begin
                         req_o   = 1'b0;
-                        addr_o  = 'h0;
                         state_d = IDLE;
                     end else begin
                         req_addr_d = get_next_addr(req_addr_q, ax_req_q_burst);
@@ -318,7 +318,7 @@ module axi2sram_sp_ext #(
             req_addr_q      <= req_addr_d;
             cnt_q           <= cnt_d;
             if ((state_q == IDLE && s_arvalid) ||
-                (state_q == READ && s_rready && (cnt_q != ax_req_q_len + 1))) begin
+                (state_q == READ && s_rready && !read_last_now)) begin
                 read_data_q <= data_i;
             end
         end
