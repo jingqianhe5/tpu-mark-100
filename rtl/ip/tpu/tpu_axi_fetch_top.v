@@ -28,7 +28,7 @@ module tpu_axi_fetch_top #(
 
     output wire [AXI_ID_WIDTH-1:0]   m_axi_awid,    // AXI 写地址 ID，固定 0
     output reg  [31:0]               m_axi_awaddr,  // AXI 写地址，后台写回时由 current_write_base 驱动
-    output wire [7:0]                m_axi_awlen,   // AXI 写 burst 长度，固定 47 表示 48 beat
+    output wire [7:0]                m_axi_awlen,   // AXI 写 burst 长度，写回最多合并 4 组动态设置
     output wire [2:0]                m_axi_awsize,  // AXI 写 beat 大小，3'b010 表示 4 字节
     output wire [1:0]                m_axi_awburst, // AXI 写 burst 类型，固定 INCR
     output wire [0:0]                m_axi_awlock,  // AXI 写锁信号，固定不加锁
@@ -38,7 +38,7 @@ module tpu_axi_fetch_top #(
     input  wire                      m_axi_awready, // AXI 写地址 ready，来自 crossbar/SRAM
     output reg  [31:0]               m_axi_wdata,   // AXI 写数据，依次输出拆分后的 C word
     output reg  [3:0]                m_axi_wstrb,   // AXI 写字节使能，固定 4'hf 全字节有效
-    output wire                      m_axi_wlast,   // AXI 写最后一拍，write_index==47 时为 1
+    output wire                      m_axi_wlast,   // AXI 写最后一拍，write_index==当前 burst len 时为 1
     output reg                       m_axi_wvalid,  // AXI 写数据 valid，在 BG_WRITE_W 拉高
     input  wire                      m_axi_wready,  // AXI 写数据 ready，来自 SRAM wrapper
     input  wire [AXI_ID_WIDTH-1:0]   m_axi_bid,     // AXI 写响应 ID，本专用核不依赖该值
@@ -88,7 +88,7 @@ module tpu_axi_fetch_top #(
         ST_COMPUTE_ACC    = 6'd9,  // 用已锁存乘积更新 16 个 C 累加器
         ST_REPORT_RESULT  = 6'd14, // 把 CRC32 回报给 CPU
         ST_HALT           = 6'd15, // 停机等待下一次 start
-        ST_OUTPUT_WAIT    = 6'd18, // 结果双缓冲满时等待写回释放一个 buffer
+        ST_OUTPUT_WAIT    = 6'd18, // 结果队列满时等待写回释放 buffer
         ST_INPUT_WAIT     = 6'd19, // 下一组输入正在预取时等待预取完成
         ST_WAIT_WRITES    = 6'd20; // 最后一组算完后等待后台写回全部完成
 
@@ -100,12 +100,12 @@ module tpu_axi_fetch_top #(
         BG_READ_R    = 2'd2, // 后台预取接收 R 数据
         BG_READ_WAIT = 2'd3; // AR 握手后延一拍再拉 R ready
 
-    // 后台写回状态机。主状态机只负责把算好的 C 矩阵放进两个结果 buffer；
-    // 这里独立推进 AXI AW/W/B，把写回和下一组读/算重叠起来。
+    // 后台写回状态机。主状态机只负责把算好的 C 矩阵放进结果队列；
+    // 这里独立推进 AXI AW/W/B，最多把 4 组连续结果合成一个 burst。
     localparam [1:0]
         BG_WRITE_IDLE = 2'd0, // 后台写回空闲
         BG_WRITE_AW   = 2'd1, // 后台写回发 AW
-        BG_WRITE_W    = 2'd2, // 后台写回发 48 beat W
+        BG_WRITE_W    = 2'd2, // 后台写回发动态长度 W
         BG_WRITE_B    = 2'd3; // 后台写回等待 B 响应
 
     reg [5:0] state; // 主状态机当前状态
@@ -120,10 +120,10 @@ module tpu_axi_fetch_top #(
 
     // 组内索引：
     // read_index  0..31：读 16 个 A word 和 16 个 B word。
-    // write_index 0..47：写 16 个 66-bit C 元素，每个元素拆 3 个 word。
+    // write_index：当前合并写 burst 内的 beat index，最多 0..191。
     // compute_index/row_idx 保留旧接口语义，当前 4-cycle 并行计算不再按行推进。
     reg [5:0]  read_index;       // 当前读输入 burst 的 beat index，0..31
-    reg [5:0]  write_index;      // 当前写结果 burst 的 beat index，0..47
+    reg [7:0]  write_index;      // 当前写结果 burst 的 beat index，最多 0..191
     reg [4:0]  compute_index;    // 兼容旧调试命名，当前计算核心不再依赖它
     reg [1:0]  row_idx;          // 兼容旧调试命名，当前计算核心不再依赖它
     reg [3:0]  store_elem_index; // 当前正在拆写的 C 元素索引，0..15
@@ -162,19 +162,22 @@ module tpu_axi_fetch_top #(
     reg [63:0] mul_r32;       // 已锁存的 A[3][k] * B[k][2]
     reg [63:0] mul_r33;       // 已锁存的 A[3][k] * B[k][3]
 
-    // 写结果双缓冲。计算完成的一组 C 会被快照到 tail buffer，
+    // 写结果 6-entry 队列。计算完成的一组 C 会被快照到 tail buffer，
+    // 后台攒够 4 组后发一个大 burst，多出的槽用于接住写回期间的新结果。
     // 后台写回状态机按 head 顺序写 SRAM 并同步滚动 CRC。
-    reg [65:0] c_wr_mem0 [0:15]; // 结果写回 buffer0
-    reg [65:0] c_wr_mem1 [0:15]; // 结果写回 buffer1
-    reg [31:0] c_wr_addr0;       // buffer0 对应的结果写回基地址
-    reg [31:0] c_wr_addr1;       // buffer1 对应的结果写回基地址
-    reg        c_wr_valid0;      // buffer0 中是否有待写/正在写的数据
-    reg        c_wr_valid1;      // buffer1 中是否有待写/正在写的数据
-    reg        c_wr_head_sel;    // 后台写回下一次应读取的 buffer，保证顺序
-    reg        c_wr_tail_sel;    // 主计算下一次应写入的 buffer
-    reg        c_wr_active_sel;  // 后台写回当前正在写的 buffer
+    reg [65:0] c_wr_mem [0:5][0:15]; // 6 个结果写回 buffer，每个保存一组 4x4 C
+    reg [31:0] c_wr_addr [0:5];      // 每个 buffer 对应的结果写回基地址
+    reg [5:0]  c_wr_valid;           // 每个 buffer 是否有待写/正在写的数据
+    reg [2:0]  c_wr_head_sel;        // 后台写回下一次应读取的 buffer，保证顺序
+    reg [2:0]  c_wr_tail_sel;        // 主计算下一次应写入的 buffer
+    reg [2:0]  c_wr_active_slot;     // 后台写回当前正在输出的 buffer
+    reg [5:0]  c_wr_head_beat_offset; // head buffer 内已经写掉的 word 数，用于 4KB 拆 burst
     reg [1:0]  bg_write_state;   // 后台写回状态机
     reg        write_error_latched; // 后台写回发现 B 响应错误后锁存
+    reg [7:0]  write_burst_len;      // 当前 AXI 写 burst 的 awlen，也就是 beat 数 - 1
+    reg [8:0]  write_burst_beats;    // 当前 AXI 写 burst 的 beat 数
+    reg [31:0] write_burst_addr;     // 当前 AXI 写 burst 的起始地址
+    reg [5:0]  write_next_head_beat_offset; // 当前 burst 完成后的 head 组内偏移
 
     // CRC 汇报路径。写回每个 result word 时滚动更新 crc32_reg，
     // 最后一拍得到 final_crc32_reg，再通过 infer_result_data 返回给 CPU。
@@ -191,20 +194,22 @@ module tpu_axi_fetch_top #(
 `endif
 
     integer i; // reset/清零数组时使用的循环变量
+    integer j; // reset/清零写回队列时使用的循环变量
 
     assign infer_result_data  = {{(SYSTOLIC_ARRAY_WIDTH*16-32){1'b0}}, infer_crc32_data_reg}; // 高 lane 固定 0，低 32 bit 放 CRC
     assign infer_result_valid = {{(SYSTOLIC_ARRAY_WIDTH-2){1'b0}}, infer_result_valid_low}; // 高 6 lane 固定无效，只使用低 2 lane
 
-    // 写回结果使用一个 INCR burst，长度 48 beat。
-    // 每 beat 32 bit，对应每组输出 48 * 4B = 192B。
+    // 写回结果使用 INCR burst。输入还没全部处理完时采用“伪双通道”调度：
+    // 结果队列到高水位才写，并且一次最多释放一组，避免长写 burst 把输入读饿住；
+    // 最后所有输入算完后再恢复最多 4 组合并的 192 beat 大 burst。
     assign m_axi_awid    = {AXI_ID_WIDTH{1'b0}}; // 单 master 内部不区分 ID，固定 0
-    assign m_axi_awlen   = 8'd47;                // 48 beat 写 burst
+    assign m_axi_awlen   = write_burst_len;      // 动态写 burst 长度，等于 beat 数 - 1
     assign m_axi_awsize  = 3'b010;               // 每 beat 4 字节
     assign m_axi_awburst = 2'b01;                // INCR burst，地址递增
     assign m_axi_awlock  = 1'b0;                 // 不使用锁
     assign m_axi_awcache = 4'b0011;              // 普通缓存属性
     assign m_axi_awprot  = 3'b000;               // 普通非特权数据访问
-    assign m_axi_wlast   = (bg_write_state == BG_WRITE_W) && (write_index == 6'd47); // 后台写回最后一个结果 word
+    assign m_axi_wlast   = (bg_write_state == BG_WRITE_W) && (write_index == write_burst_len); // 当前 burst 最后一个 result word
 
     // AXI 读通道只读 A/B 输入矩阵：
     // arlen=31，一次 burst 读 32 个 word，也就是 128B。
@@ -228,9 +233,13 @@ module tpu_axi_fetch_top #(
     wire read_burst_last = (read_index == 6'd31);  // 当前组输入 32 beat 是否读完
     wire main_read_done = read_burst_last;          // 主读完成条件别名
     wire bg_read_done = (bg_read_index == 6'd31);   // 后台预取 32 beat 是否读完
-    wire c_wr_queue_full = c_wr_valid0 && c_wr_valid1; // 两个结果 buffer 都被占用
-    wire c_wr_queue_empty = !c_wr_valid0 && !c_wr_valid1; // 没有待写结果
-    wire c_wr_head_valid = c_wr_head_sel ? c_wr_valid1 : c_wr_valid0; // FIFO 头 buffer 是否有效
+    wire [2:0] c_wr_queue_count =
+        {2'd0, c_wr_valid[0]} + {2'd0, c_wr_valid[1]} +
+        {2'd0, c_wr_valid[2]} + {2'd0, c_wr_valid[3]} +
+        {2'd0, c_wr_valid[4]} + {2'd0, c_wr_valid[5]}; // 结果队列中已有组数
+    wire c_wr_queue_full = &c_wr_valid; // 六个结果 buffer 都被占用
+    wire c_wr_queue_empty = ~|c_wr_valid; // 没有待写结果
+    wire c_wr_head_valid = c_wr_valid[c_wr_head_sel]; // FIFO 头 buffer 是否有效
 
     wire [31:0] bg_src_read_addr = bg_read_base ;// 预取 word 地址
     wire [3:0] bg_target_index = bg_read_index[3:0]; // 预取写入 A/B buffer 的 0..15 索引
@@ -321,21 +330,178 @@ module tpu_axi_fetch_top #(
         end
     endfunction
 
+    function [2:0] next_slot_mod6;
+        input [2:0] slot;
+        input [2:0] step;
+        reg [3:0] sum;
+        begin
+            sum = {1'b0, slot} + {1'b0, step};
+            if (sum >= 4'd6) begin
+                next_slot_mod6 = sum - 4'd6;
+            end else begin
+                next_slot_mod6 = sum[2:0];
+            end
+        end
+    endfunction
+
     wire store_word_sel_last = (store_word_sel == 2'd2); // 当前 C 元素第三个 word 是否写完
+    wire store_group_last = store_word_sel_last && (store_elem_index == 4'd15); // 当前 beat 是否写完一整组 C
     wire [1:0] next_store_word_sel =
         store_word_sel_last ? 2'd0 : (store_word_sel + 2'd1); // 下一个 word 选择，0/1/2 循环
     wire [3:0] next_store_elem_index =
-        store_elem_index + {3'd0, store_word_sel_last}; // 每写完 3 个 word 才切到下一个 C 元素
+        store_word_sel_last ? (store_group_last ? 4'd0 : (store_elem_index + 4'd1)) : store_elem_index; // 每 3 个 word 切下一个 C 元素
+    wire [2:0] next_store_slot =
+        store_group_last ? next_slot_mod6(c_wr_active_slot, 3'd1) : c_wr_active_slot; // 一组 48 beat 写完后切到下一个结果槽
     wire [65:0] current_store_value =
-        c_wr_active_sel ? c_wr_mem1[store_elem_index] : c_wr_mem0[store_elem_index]; // 当前写 buffer 的 C 元素
+        c_wr_mem[c_wr_active_slot][store_elem_index]; // 当前写 buffer 的 C 元素
     wire [65:0] next_store_value =
-        c_wr_active_sel ? c_wr_mem1[next_store_elem_index] : c_wr_mem0[next_store_elem_index]; // 下一个写 buffer 的 C 元素
+        c_wr_mem[next_store_slot][next_store_elem_index]; // 下一个 beat 对应的 C 元素，可能跨到下一组
     wire [31:0] current_store_word =
         select_c_word(current_store_value, store_word_sel); // 当前 beat 要写出的 word
     wire [31:0] next_store_word =
         select_c_word(next_store_value, next_store_word_sel); // 下一个 beat 预先选出的 word
-    wire [31:0] current_write_base =
-        c_wr_active_sel ? c_wr_addr1 : c_wr_addr0; // 当前后台写回 burst 基地址
+    wire [31:0] current_write_base = c_wr_addr[c_wr_head_sel]; // 当前后台写回 FIFO head 基地址
+    wire [31:0] next_write_start_addr =
+        current_write_base + {24'd0, c_wr_head_beat_offset, 2'b00}; // 当前 burst 起始地址，支持从组内中间继续写
+
+    function [3:0] beat_offset_to_elem;
+        input [5:0] beat_offset;
+        begin
+            if (beat_offset >= 6'd45) begin
+                beat_offset_to_elem = 4'd15;
+            end else if (beat_offset >= 6'd42) begin
+                beat_offset_to_elem = 4'd14;
+            end else if (beat_offset >= 6'd39) begin
+                beat_offset_to_elem = 4'd13;
+            end else if (beat_offset >= 6'd36) begin
+                beat_offset_to_elem = 4'd12;
+            end else if (beat_offset >= 6'd33) begin
+                beat_offset_to_elem = 4'd11;
+            end else if (beat_offset >= 6'd30) begin
+                beat_offset_to_elem = 4'd10;
+            end else if (beat_offset >= 6'd27) begin
+                beat_offset_to_elem = 4'd9;
+            end else if (beat_offset >= 6'd24) begin
+                beat_offset_to_elem = 4'd8;
+            end else if (beat_offset >= 6'd21) begin
+                beat_offset_to_elem = 4'd7;
+            end else if (beat_offset >= 6'd18) begin
+                beat_offset_to_elem = 4'd6;
+            end else if (beat_offset >= 6'd15) begin
+                beat_offset_to_elem = 4'd5;
+            end else if (beat_offset >= 6'd12) begin
+                beat_offset_to_elem = 4'd4;
+            end else if (beat_offset >= 6'd9) begin
+                beat_offset_to_elem = 4'd3;
+            end else if (beat_offset >= 6'd6) begin
+                beat_offset_to_elem = 4'd2;
+            end else if (beat_offset >= 6'd3) begin
+                beat_offset_to_elem = 4'd1;
+            end else begin
+                beat_offset_to_elem = 4'd0;
+            end
+        end
+    endfunction
+
+    function [1:0] beat_offset_to_word;
+        input [5:0] beat_offset;
+        reg [3:0] elem_idx;
+        reg [5:0] elem_base;
+        begin
+            elem_idx = beat_offset_to_elem(beat_offset);
+            elem_base = {2'd0, elem_idx} + {1'd0, elem_idx, 1'b0}; // elem_idx * 3
+            beat_offset_to_word = beat_offset - elem_base;
+        end
+    endfunction
+
+    function [8:0] queued_write_beats;
+        input [2:0] queue_count;
+        input [5:0] head_offset;
+        reg [9:0] total_beats;
+        reg [9:0] available_beats;
+        begin
+            case (queue_count)
+                3'd0: total_beats = 10'd0;
+                3'd1: total_beats = 10'd48;
+                3'd2: total_beats = 10'd96;
+                3'd3: total_beats = 10'd144;
+                3'd4: total_beats = 10'd192;
+                3'd5: total_beats = 10'd240;
+                default: total_beats = 10'd288;
+            endcase
+            available_beats = (total_beats > {4'd0, head_offset}) ?
+                (total_beats - {4'd0, head_offset}) : 10'd0;
+            queued_write_beats = (available_beats > 10'd192) ? 9'd192 : available_beats[8:0];
+        end
+    endfunction
+
+    function [8:0] boundary_write_beats;
+        input [31:0] addr;
+        reg [12:0] bytes_left;
+        begin
+            bytes_left = 13'd4096 - {1'b0, addr[11:0]};
+            if (bytes_left >= 13'd768) begin
+                boundary_write_beats = 9'd192;
+            end else begin
+                boundary_write_beats = {1'b0, bytes_left[9:2]};
+            end
+        end
+    endfunction
+
+    function [2:0] complete_groups_in_beats;
+        input [8:0] beat_total;
+        begin
+            if (beat_total >= 9'd192) begin
+                complete_groups_in_beats = 3'd4;
+            end else if (beat_total >= 9'd144) begin
+                complete_groups_in_beats = 3'd3;
+            end else if (beat_total >= 9'd96) begin
+                complete_groups_in_beats = 3'd2;
+            end else if (beat_total >= 9'd48) begin
+                complete_groups_in_beats = 3'd1;
+            end else begin
+                complete_groups_in_beats = 3'd0;
+            end
+        end
+    endfunction
+
+    function [5:0] remaining_beats_in_group;
+        input [8:0] beat_total;
+        reg [2:0] complete_groups;
+        begin
+            complete_groups = complete_groups_in_beats(beat_total);
+            case (complete_groups)
+                3'd4: remaining_beats_in_group = beat_total - 9'd192;
+                3'd3: remaining_beats_in_group = beat_total - 9'd144;
+                3'd2: remaining_beats_in_group = beat_total - 9'd96;
+                3'd1: remaining_beats_in_group = beat_total - 9'd48;
+                default: remaining_beats_in_group = beat_total[5:0];
+            endcase
+        end
+    endfunction
+
+    wire [8:0] write_queued_beats = queued_write_beats(c_wr_queue_count, c_wr_head_beat_offset); // 队列当前可连续写出的 beat 数
+    wire [8:0] write_boundary_beats = boundary_write_beats(next_write_start_addr); // 当前地址到 4KB 边界前最多可写 beat 数
+    wire write_drain_mode = (state == ST_WAIT_WRITES); // 输入已经全部算完，只剩结果写回
+    wire write_stream_mode = (groups_left > 32'd1) && !write_drain_mode; // 仍需继续读后续输入
+    wire write_queue_high_water = (c_wr_queue_count >= 3'd5); // 结果队列接近满，需要短写释放槽位
+    wire write_partial_group = (c_wr_head_beat_offset != 6'd0); // 4KB 拆分后，需要继续写完当前组
+    wire [8:0] write_one_group_limit =
+        (c_wr_head_beat_offset == 6'd0) ? 9'd48 : (9'd48 - {3'd0, c_wr_head_beat_offset}); // 非收尾阶段最多写完一个结果组
+    wire [8:0] write_policy_max_beats =
+        write_drain_mode ? 9'd192 : write_one_group_limit; // 运行中短写，收尾时大写
+    wire [8:0] write_limited_beats =
+        (write_queued_beats < write_boundary_beats) ? write_queued_beats : write_boundary_beats; // 先受队列和 4KB 边界限制
+    wire [8:0] next_write_burst_beats =
+        (write_limited_beats < write_policy_max_beats) ? write_limited_beats : write_policy_max_beats; // 本次 burst 实际 beat 数
+    wire [8:0] next_write_beat_total = {3'd0, c_wr_head_beat_offset} + next_write_burst_beats; // burst 完成后的组内总进度
+    wire [5:0] next_write_head_beat_offset = remaining_beats_in_group(next_write_beat_total); // 本次 burst 结束后的 head 组内偏移
+    wire write_start_allowed = c_wr_head_valid &&
+        (write_drain_mode ||
+         write_partial_group ||
+         c_wr_queue_full ||
+         (write_stream_mode && write_queue_high_water) ||
+         (!write_stream_mode && (c_wr_queue_count >= 3'd4))); // 读输入阶段只在高水位短写，收尾阶段再合并大写
 
     // 标准 little-endian CRC32 更新函数。这里不额外读回结果校验，
     // 而是在写出每个 result word 的同时把 CRC 算出来。
@@ -373,46 +539,25 @@ module tpu_axi_fetch_top #(
 
     task enqueue_c_mem_result;
         begin
-            if (!c_wr_tail_sel) begin
-                c_wr_mem0[4'd0]  <= c_mem[4'd0];  // 快照稳定 C[0][0]
-                c_wr_mem0[4'd1]  <= c_mem[4'd1];  // 快照稳定 C[0][1]
-                c_wr_mem0[4'd2]  <= c_mem[4'd2];  // 快照稳定 C[0][2]
-                c_wr_mem0[4'd3]  <= c_mem[4'd3];  // 快照稳定 C[0][3]
-                c_wr_mem0[4'd4]  <= c_mem[4'd4];  // 快照稳定 C[1][0]
-                c_wr_mem0[4'd5]  <= c_mem[4'd5];  // 快照稳定 C[1][1]
-                c_wr_mem0[4'd6]  <= c_mem[4'd6];  // 快照稳定 C[1][2]
-                c_wr_mem0[4'd7]  <= c_mem[4'd7];  // 快照稳定 C[1][3]
-                c_wr_mem0[4'd8]  <= c_mem[4'd8];  // 快照稳定 C[2][0]
-                c_wr_mem0[4'd9]  <= c_mem[4'd9];  // 快照稳定 C[2][1]
-                c_wr_mem0[4'd10] <= c_mem[4'd10]; // 快照稳定 C[2][2]
-                c_wr_mem0[4'd11] <= c_mem[4'd11]; // 快照稳定 C[2][3]
-                c_wr_mem0[4'd12] <= c_mem[4'd12]; // 快照稳定 C[3][0]
-                c_wr_mem0[4'd13] <= c_mem[4'd13]; // 快照稳定 C[3][1]
-                c_wr_mem0[4'd14] <= c_mem[4'd14]; // 快照稳定 C[3][2]
-                c_wr_mem0[4'd15] <= c_mem[4'd15]; // 快照稳定 C[3][3]
-                c_wr_addr0       <= active_dst_base; // 记录本组写回基地址
-                c_wr_valid0      <= 1'b1; // buffer0 入队
-            end else begin
-                c_wr_mem1[4'd0]  <= c_mem[4'd0];  // 快照稳定 C[0][0]
-                c_wr_mem1[4'd1]  <= c_mem[4'd1];  // 快照稳定 C[0][1]
-                c_wr_mem1[4'd2]  <= c_mem[4'd2];  // 快照稳定 C[0][2]
-                c_wr_mem1[4'd3]  <= c_mem[4'd3];  // 快照稳定 C[0][3]
-                c_wr_mem1[4'd4]  <= c_mem[4'd4];  // 快照稳定 C[1][0]
-                c_wr_mem1[4'd5]  <= c_mem[4'd5];  // 快照稳定 C[1][1]
-                c_wr_mem1[4'd6]  <= c_mem[4'd6];  // 快照稳定 C[1][2]
-                c_wr_mem1[4'd7]  <= c_mem[4'd7];  // 快照稳定 C[1][3]
-                c_wr_mem1[4'd8]  <= c_mem[4'd8];  // 快照稳定 C[2][0]
-                c_wr_mem1[4'd9]  <= c_mem[4'd9];  // 快照稳定 C[2][1]
-                c_wr_mem1[4'd10] <= c_mem[4'd10]; // 快照稳定 C[2][2]
-                c_wr_mem1[4'd11] <= c_mem[4'd11]; // 快照稳定 C[2][3]
-                c_wr_mem1[4'd12] <= c_mem[4'd12]; // 快照稳定 C[3][0]
-                c_wr_mem1[4'd13] <= c_mem[4'd13]; // 快照稳定 C[3][1]
-                c_wr_mem1[4'd14] <= c_mem[4'd14]; // 快照稳定 C[3][2]
-                c_wr_mem1[4'd15] <= c_mem[4'd15]; // 快照稳定 C[3][3]
-                c_wr_addr1       <= active_dst_base; // 记录本组写回基地址
-                c_wr_valid1      <= 1'b1; // buffer1 入队
-            end
-            c_wr_tail_sel <= ~c_wr_tail_sel; // tail 前进，保持写回顺序
+            c_wr_mem[c_wr_tail_sel][4'd0]  <= c_mem[4'd0];  // 快照稳定 C[0][0]
+            c_wr_mem[c_wr_tail_sel][4'd1]  <= c_mem[4'd1];  // 快照稳定 C[0][1]
+            c_wr_mem[c_wr_tail_sel][4'd2]  <= c_mem[4'd2];  // 快照稳定 C[0][2]
+            c_wr_mem[c_wr_tail_sel][4'd3]  <= c_mem[4'd3];  // 快照稳定 C[0][3]
+            c_wr_mem[c_wr_tail_sel][4'd4]  <= c_mem[4'd4];  // 快照稳定 C[1][0]
+            c_wr_mem[c_wr_tail_sel][4'd5]  <= c_mem[4'd5];  // 快照稳定 C[1][1]
+            c_wr_mem[c_wr_tail_sel][4'd6]  <= c_mem[4'd6];  // 快照稳定 C[1][2]
+            c_wr_mem[c_wr_tail_sel][4'd7]  <= c_mem[4'd7];  // 快照稳定 C[1][3]
+            c_wr_mem[c_wr_tail_sel][4'd8]  <= c_mem[4'd8];  // 快照稳定 C[2][0]
+            c_wr_mem[c_wr_tail_sel][4'd9]  <= c_mem[4'd9];  // 快照稳定 C[2][1]
+            c_wr_mem[c_wr_tail_sel][4'd10] <= c_mem[4'd10]; // 快照稳定 C[2][2]
+            c_wr_mem[c_wr_tail_sel][4'd11] <= c_mem[4'd11]; // 快照稳定 C[2][3]
+            c_wr_mem[c_wr_tail_sel][4'd12] <= c_mem[4'd12]; // 快照稳定 C[3][0]
+            c_wr_mem[c_wr_tail_sel][4'd13] <= c_mem[4'd13]; // 快照稳定 C[3][1]
+            c_wr_mem[c_wr_tail_sel][4'd14] <= c_mem[4'd14]; // 快照稳定 C[3][2]
+            c_wr_mem[c_wr_tail_sel][4'd15] <= c_mem[4'd15]; // 快照稳定 C[3][3]
+            c_wr_addr[c_wr_tail_sel]       <= active_dst_base; // 记录本组写回基地址
+            c_wr_valid[c_wr_tail_sel]      <= 1'b1; // tail buffer 入队
+            c_wr_tail_sel <= next_slot_mod6(c_wr_tail_sel, 3'd1); // tail 前进，保持写回顺序
         end
     endtask
 
@@ -518,16 +663,20 @@ module tpu_axi_fetch_top #(
                 m_axi_awvalid <= 1'b0; // 空闲时不发 AW
                 m_axi_wvalid  <= 1'b0; // 空闲时不发 W
                 m_axi_bready  <= 1'b0; // 空闲时不接收 B
-                if (c_wr_head_valid) begin
-                    c_wr_active_sel  <= c_wr_head_sel; // 选择 FIFO 头作为当前写回 buffer
-                    write_index      <= 6'd0; // 当前结果 burst 从第 0 beat 开始
-                    store_elem_index <= 4'd0; // 从 C[0] 开始拆 word
-                    store_word_sel   <= 2'd0; // 先写低 32 bit
+                if (write_start_allowed && (next_write_burst_beats != 9'd0)) begin
+                    c_wr_active_slot <= c_wr_head_sel; // 选择 FIFO 头作为当前写回 buffer
+                    write_index      <= 8'd0; // 当前合并 burst 从第 0 beat 开始
+                    store_elem_index <= beat_offset_to_elem(c_wr_head_beat_offset); // 支持从 4KB 拆分后的组内偏移继续写
+                    store_word_sel   <= beat_offset_to_word(c_wr_head_beat_offset); // 支持从元素的第几个 word 继续写
+                    write_burst_addr <= next_write_start_addr; // 锁存本次 AW 起始地址
+                    write_burst_len  <= next_write_burst_beats[7:0] - 8'd1; // 锁存 awlen，W 阶段不再动态计算
+                    write_burst_beats <= next_write_burst_beats; // 锁存本次 burst beat 数，便于 debug
+                    write_next_head_beat_offset <= next_write_head_beat_offset; // 锁存 burst 后的组内偏移
                     bg_write_state   <= BG_WRITE_AW; // 下一步发 AW
                 end
             end else if (bg_write_state == BG_WRITE_AW) begin
-                m_axi_awaddr  <= current_write_base; // 当前结果 buffer 的写回基地址
-                m_axi_awvalid <= 1'b1; // 发起 48 beat 写 burst 地址
+                m_axi_awaddr  <= write_burst_addr; // 当前结果合并 burst 的写回起始地址
+                m_axi_awvalid <= 1'b1; // 发起动态长度写 burst 地址
                 m_axi_wvalid  <= 1'b0; // AW 未完成前不推 W
                 if (m_axi_awvalid && m_axi_awready) begin
                     m_axi_awvalid  <= 1'b0; // AW 被接受
@@ -544,19 +693,24 @@ module tpu_axi_fetch_top #(
                         $display("[tpu_wr] beat=%0d data=%08x last=%0b",
                                  write_index,
                                  m_axi_wdata,
-                                 (write_index == 6'd47));
+                                 (write_index == write_burst_len));
                     end
 `endif
                     crc32_reg <= crc32_step_word_le(crc32_reg, m_axi_wdata); // 当前 word 写出成功，同步滚动 CRC
-                    if (write_index == 6'd47) begin
+                    if (store_group_last) begin
+                        c_wr_valid[c_wr_active_slot] <= 1'b0; // 当前 48 beat 组已经完整写出，立即释放结果槽
+                        c_wr_head_sel <= next_slot_mod6(c_wr_head_sel, 3'd1); // FIFO head 前进到下一组
+                    end
+                    if (write_index == write_burst_len) begin
                         final_crc32_reg <= ~crc32_step_word_le(crc32_reg, m_axi_wdata); // 最后一拍写出后得到阶段性最终 CRC
                         m_axi_wvalid    <= 1'b0; // 当前 burst 的 W 全部完成
                         m_axi_bready    <= 1'b1; // 等待 B 响应
                         bg_write_state  <= BG_WRITE_B; // 转入 B 通道
                     end else begin
-                        write_index      <= write_index + 6'd1; // 推进到下一 beat
+                        write_index      <= write_index + 8'd1; // 推进到下一 beat
                         store_word_sel   <= next_store_word_sel; // 0/1/2 循环选择 C 拆分 word
                         store_elem_index <= next_store_elem_index; // 每三个 word 切下一个 C 元素
+                        c_wr_active_slot <= next_store_slot; // 跨组时切到下一个结果槽
                         m_axi_wdata      <= next_store_word; // 预装下一拍写数据
                     end
                 end
@@ -567,12 +721,7 @@ module tpu_axi_fetch_top #(
                     if (m_axi_bresp != 2'b00) begin
                         write_error_latched <= 1'b1; // 锁存写错误，主状态机下一拍停机
                     end
-                    if (!c_wr_active_sel) begin
-                        c_wr_valid0 <= 1'b0; // buffer0 写回完成，释放空间
-                    end else begin
-                        c_wr_valid1 <= 1'b0; // buffer1 写回完成，释放空间
-                    end
-                    c_wr_head_sel  <= ~c_wr_head_sel; // FIFO head 前进
+                    c_wr_head_beat_offset <= write_next_head_beat_offset; // 若 4KB 边界切在组内，下次从该偏移继续
                     bg_write_state <= BG_WRITE_IDLE; // 回到空闲，下一拍可写下一个 buffer
                 end
             end
@@ -603,7 +752,7 @@ module tpu_axi_fetch_top #(
             active_dst_base  <= 32'd0; // 清当前输出地址
             groups_left      <= 32'd0; // 清剩余组数
             read_index       <= 6'd0; // 清读输入 beat 索引
-            write_index      <= 6'd0; // 清写输出 beat 索引
+            write_index      <= 8'd0; // 清写输出 beat 索引
             compute_index    <= 5'd0; // 清当前计算行索引
             row_idx          <= 2'd0; // 清当前行号
             mul_phase        <= 2'd0; // 清 k 方向乘加阶段
@@ -616,15 +765,17 @@ module tpu_axi_fetch_top #(
             bg_read_state    <= BG_READ_IDLE; // 后台预取状态机空闲
             bg_read_index    <= 6'd0; // 清后台预取 beat 索引
             bg_read_base     <= 32'd0; // 清后台预取基地址
-            c_wr_addr0       <= 32'd0; // 清写回 buffer0 地址
-            c_wr_addr1       <= 32'd0; // 清写回 buffer1 地址
-            c_wr_valid0      <= 1'b0; // 写回 buffer0 空
-            c_wr_valid1      <= 1'b0; // 写回 buffer1 空
+            c_wr_valid       <= 6'd0; // 写回队列清空
             c_wr_head_sel    <= 1'b0; // 写回 FIFO head 复位到 buffer0
             c_wr_tail_sel    <= 1'b0; // 写回 FIFO tail 复位到 buffer0
-            c_wr_active_sel  <= 1'b0; // 当前写回选择清零
+            c_wr_active_slot <= 3'd0; // 当前写回选择清零
+            c_wr_head_beat_offset <= 6'd0; // head 组内写偏移清零
             bg_write_state   <= BG_WRITE_IDLE; // 后台写回空闲
             write_error_latched <= 1'b0; // 清后台写错误锁存
+            write_burst_len  <= 8'd47; // 默认单组 burst 长度，启动后会动态覆盖
+            write_burst_beats <= 9'd48; // 默认单组 beat 数
+            write_burst_addr <= 32'd0; // 清当前写 burst 地址
+            write_next_head_beat_offset <= 6'd0; // 清下次 head 偏移
             crc32_reg        <= 32'hffff_ffff; // CRC32 初始值
             final_crc32_reg  <= 32'd0; // 清最终 CRC
             infer_crc32_data_reg   <= 32'd0; // 清返回 CPU 的 CRC 数据
@@ -649,8 +800,12 @@ module tpu_axi_fetch_top #(
                 a_mem1[i] <= 32'd0; // 清 A buffer1 第 i 项
                 b_mem1[i] <= 32'd0; // 清 B buffer1 第 i 项
                 c_mem[i] <= 66'd0; // 清 C 结果第 i 项
-                c_wr_mem0[i] <= 66'd0; // 清写回 buffer0 第 i 项
-                c_wr_mem1[i] <= 66'd0; // 清写回 buffer1 第 i 项
+                for (j = 0; j < 6; j = j + 1) begin
+                    c_wr_mem[j][i] <= 66'd0; // 清写回 buffer 第 i 项
+                end
+            end
+            for (j = 0; j < 6; j = j + 1) begin
+                c_wr_addr[j] <= 32'd0; // 清写回 buffer 地址
             end
         end else begin
 
@@ -693,13 +848,17 @@ module tpu_axi_fetch_top #(
                         prefetch_valid  <= 1'b0; // 刚启动时还没有预取
                         input_from_prefetch <= 1'b0; // 第一组需要主读输入
                         bg_read_state   <= BG_READ_IDLE; // 后台预取空闲
-                        c_wr_valid0     <= 1'b0; // 新任务清空写回 buffer0
-                        c_wr_valid1     <= 1'b0; // 新任务清空写回 buffer1
+                        c_wr_valid      <= 6'd0; // 新任务清空写回队列
                         c_wr_head_sel   <= 1'b0; // 写回 FIFO head 回到 buffer0
                         c_wr_tail_sel   <= 1'b0; // 写回 FIFO tail 回到 buffer0
-                        c_wr_active_sel <= 1'b0; // 清当前写回选择
+                        c_wr_active_slot <= 3'd0; // 清当前写回选择
+                        c_wr_head_beat_offset <= 6'd0; // 清 head 组内写偏移
                         bg_write_state  <= BG_WRITE_IDLE; // 后台写回空闲
                         write_error_latched <= 1'b0; // 清后台写错误
+                        write_burst_len <= 8'd47; // 清写 burst 长度
+                        write_burst_beats <= 9'd48; // 清写 burst beat 数
+                        write_burst_addr <= 32'd0; // 清写 burst 地址
+                        write_next_head_beat_offset <= 6'd0; // 清下次 head 偏移
                         report_wait_count <= 3'd0; // 清报告计数
                         state      <= ST_GROUP_PREP; // 直接进入数据流，跳过小程序取指/译码
                     end
@@ -1013,13 +1172,17 @@ module tpu_axi_fetch_top #(
                         prefetch_valid  <= 1'b0; // 刚启动时还没有预取
                         input_from_prefetch <= 1'b0; // 第一组需要主读输入
                         bg_read_state   <= BG_READ_IDLE; // 后台预取空闲
-                        c_wr_valid0     <= 1'b0; // 新任务清空写回 buffer0
-                        c_wr_valid1     <= 1'b0; // 新任务清空写回 buffer1
+                        c_wr_valid      <= 6'd0; // 新任务清空写回队列
                         c_wr_head_sel   <= 1'b0; // 写回 FIFO head 回到 buffer0
                         c_wr_tail_sel   <= 1'b0; // 写回 FIFO tail 回到 buffer0
-                        c_wr_active_sel <= 1'b0; // 清当前写回选择
+                        c_wr_active_slot <= 3'd0; // 清当前写回选择
+                        c_wr_head_beat_offset <= 6'd0; // 清 head 组内写偏移
                         bg_write_state  <= BG_WRITE_IDLE; // 后台写回空闲
                         write_error_latched <= 1'b0; // 清后台写错误
+                        write_burst_len <= 8'd47; // 清写 burst 长度
+                        write_burst_beats <= 9'd48; // 清写 burst beat 数
+                        write_burst_addr <= 32'd0; // 清写 burst 地址
+                        write_next_head_beat_offset <= 6'd0; // 清下次 head 偏移
                         report_wait_count <= 3'd0; // 清报告计数
                         state      <= ST_GROUP_PREP; // 直接进入数据流，跳过小程序取指/译码
                     end

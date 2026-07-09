@@ -104,6 +104,7 @@ module axi2sram_sp_ext #(
     
     reg [AXI_ADDR_WIDTH-1:0] req_addr_d, req_addr_q;
     reg [7:0]                cnt_d, cnt_q;
+    reg [AXI_DATA_WIDTH-1:0] read_data_q;
 
     function automatic [AXI_ADDR_WIDTH-1:0] get_wrap_boundary;
         input [AXI_ADDR_WIDTH-1:0] unaligned_address;
@@ -230,23 +231,35 @@ module axi2sram_sp_ext #(
             end
 
             READ: begin
-                // keep request to memory high
-                req_o  = 1'b1;
-                addr_o = req_addr_q;
-                // send the response
+                // 返回上一拍地址对应的数据。若 AXI master 接收当前 beat，
+                // 同一拍把下一个 SRAM 地址送出去，下一拍即可继续返回数据。
                 s_rvalid = 1'b1;
-                s_rdata  = data_i;
+                s_rdata  = read_data_q;
                 s_rid    = ax_req_q_id;
                 s_rlast  = (cnt_q == ax_req_q_len + 1);
-                // check that the master is ready, the slave must not wait on this
+                req_o    = 1'b1;
+                addr_o   = req_addr_q;
                 if (s_rready) begin
-                    // we sent the last byte -> go back to idle
                     if (s_rlast) begin
+                        req_o   = 1'b0;
+                        addr_o  = 'h0;
                         state_d = IDLE;
-                        // we already got everything
-                    end
-                    else begin
-                        state_d = READ_ADDR;
+                    end else begin
+                        case (ax_req_q_burst)
+                            FIXED, INCR: addr_o = cons_addr;
+                            WRAP: begin
+                                if (cons_addr == upper_wrap_boundary) begin
+                                    addr_o = wrap_boundary;
+                                end else if (cons_addr > upper_wrap_boundary) begin
+                                    addr_o = ax_req_q_addr + ((cnt_q - ax_req_q_len) << LOG_NR_BYTES);
+                                end else begin
+                                    addr_o = cons_addr;
+                                end
+                            end
+                        endcase
+                        req_addr_d = addr_o;
+                        cnt_d      = cnt_q + 1;
+                        state_d    = READ;
                     end
                 end
             end
@@ -352,6 +365,7 @@ module axi2sram_sp_ext #(
             ax_req_q_size   <= 3'h0;
             req_addr_q      <= 'h0;
             cnt_q           <= 8'h0;
+            read_data_q     <= 'h0;
         end else begin
             state_q         <= state_d;
             ax_req_q_addr   <= ax_req_d_addr;
@@ -361,6 +375,10 @@ module axi2sram_sp_ext #(
             ax_req_q_size   <= ax_req_d_size;
             req_addr_q      <= req_addr_d;
             cnt_q           <= cnt_d;
+            if ((state_q == IDLE && s_arvalid) ||
+                (state_q == READ && s_rready && (cnt_q != ax_req_q_len + 1))) begin
+                read_data_q <= data_i;
+            end
         end
     end
 
