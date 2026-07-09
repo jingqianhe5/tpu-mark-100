@@ -68,6 +68,13 @@ static void uart_puts_raw(const char *s)
     }
 }
 
+static void uart_puts_fifo_fit(const char *s)
+{
+    while (*s) {
+        uart_write_reg(UART_THR, (uint8_t)*s++);
+    }
+}
+
 static void uart_put_hex32(uint32_t value)
 {
     static const char hex[] = "0123456789abcdef";
@@ -154,7 +161,7 @@ static int wait_tpu_done(uint32_t *status_out)
 int main(void)
 {
     uart_init_115200();
-    uart_puts_raw("MATMUL_START\n");
+    uart_puts_fifo_fit("MATMUL_START\n");
 
     uint32_t status = tpu_clear();
 
