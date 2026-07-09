@@ -9,8 +9,17 @@
 unsigned long UART_BASE = 0xbf000000u;
 
 #define UART_THR 0x0u
+#define UART_IER 0x1u
+#define UART_FCR 0x2u
+#define UART_LCR 0x3u
 #define UART_LSR 0x5u
 #define UART_LSR_THRE 0x20u
+#define UART_LCR_DLAB 0x80u
+#define UART_LCR_8N1  0x03u
+
+#ifndef UART_DIVISOR_115200
+#define UART_DIVISOR_115200 41u
+#endif
 
 #ifndef TPU_STATUS_POLL_LIMIT
 #define TPU_STATUS_POLL_LIMIT 200000000u
@@ -33,6 +42,16 @@ static inline uint8_t uart_read_reg(uint32_t offset)
 static inline void uart_write_reg(uint32_t offset, uint8_t data)
 {
     *(volatile uint8_t *)(UART_BASE + offset) = data;
+}
+
+static void uart_init_115200(void)
+{
+    uart_write_reg(UART_LCR, UART_LCR_DLAB);
+    uart_write_reg(UART_THR, (uint8_t)(UART_DIVISOR_115200 & 0xffu));
+    uart_write_reg(UART_IER, (uint8_t)((UART_DIVISOR_115200 >> 8) & 0xffu));
+    uart_write_reg(UART_LCR, UART_LCR_8N1);
+    uart_write_reg(UART_IER, 0x00u);
+    uart_write_reg(UART_FCR, 0x00u);
 }
 
 static void uart_putc(char ch)
@@ -134,6 +153,7 @@ static int wait_tpu_done(uint32_t *status_out)
 
 int main(void)
 {
+    uart_init_115200();
     uart_puts_raw("MATMUL_START\n");
 
     uint32_t status = tpu_clear();
