@@ -189,6 +189,10 @@ module tpu_axi_fetch_top #(
     // CRC 汇报路径。后台从结果队列读取每个 result word 时滚动更新 crc32_reg，
     // 最后一组最后一拍得到 final_crc32_reg，再通过 infer_result_data 返回给 CPU。
     reg [31:0] crc32_reg;         // 正在滚动更新的 CRC32 中间值
+    reg [31:0] crc_word0_reg;     // 已从结果 buffer 取出的第 0 个 32-bit word，下一拍进入 CRC
+    reg [31:0] crc_word1_reg;     // 已从结果 buffer 取出的第 1 个 32-bit word，下一拍进入 CRC
+    reg        crc_pair_valid;    // crc_word0/1_reg 是否有效
+    reg        crc_pair_last;     // crc_word0/1_reg 是否是一组 48 word 中的最后一对
     reg [31:0] final_crc32_reg;   // 最后一拍写出后取反得到的最终 CRC32
     reg [31:0] infer_crc32_data_reg; // 当前只返回 32-bit CRC32
     reg [1:0]  infer_result_valid_low; // 当前只使用低两个 16-bit lane，高 lane 固定为 0
@@ -552,21 +556,22 @@ module tpu_axi_fetch_top #(
     endfunction
 
     function [31:0] crc32_step_2word_le;
-        input [31:0] crc_in; // 输入 CRC 中间值
-        input [31:0] word0;  // 本拍处理的第 1 个 32-bit word
-        input [31:0] word1;  // 本拍处理的第 2 个 32-bit word
+        input [31:0] crc_in;  // 输入 CRC 中间值
+        input [31:0] word0_in; // 本拍已锁存的第 0 个 32-bit word
+        input [31:0] word1_in; // 本拍已锁存的第 1 个 32-bit word
+        reg [31:0] crc_mid; // 加入 word0 后的中间 CRC
         begin
-            crc32_step_2word_le = crc32_step_word_le(crc32_step_word_le(crc_in, word0), word1);
+            crc_mid = crc32_step_word_le(crc_in, word0_in); // 先按 little-endian 加入第 0 个 word
+            crc32_step_2word_le = crc32_step_word_le(crc_mid, word1_in); // 再加入第 1 个 word
         end
     endfunction
 
-    wire [1:0] second_store_word_sel =
-        (next_store_word_sel == 2'd2) ? 2'd0 : (next_store_word_sel + 2'd1); // 一拍处理两个 word 后的 word 选择
-    wire [3:0] second_store_elem_index =
-        (next_store_word_sel == 2'd2) ? (next_store_elem_index + 4'd1) : next_store_elem_index; // 一拍处理两个 word 后的元素选择
-    wire crc_pair_last = (write_index >= 8'd46); // 48 个 word 每拍处理 2 个，46/47 是最后一对
-    wire [31:0] crc_pair_next =
-        crc32_step_2word_le(crc32_reg, current_store_word, next_store_word); // 当前拍两个 word 进入 CRC 后的结果
+    wire crc_current_pair_last = (write_index == 8'd46); // 当前取出的两个 word 是否是一组最后一对 46/47
+    wire [1:0] pair_next_word_sel = next_store_word_sel; // 第二个 word 的 word_sel
+    wire [3:0] pair_next_elem_index = next_store_elem_index; // 第二个 word 的元素下标
+    wire [31:0] current_store_word1 =
+        select_c_word(c_wr_mem[c_wr_active_slot][pair_next_elem_index], pair_next_word_sel); // 当前 pair 的第 1 个 word
+    wire [31:0] crc_pair_next = crc32_step_2word_le(crc32_reg, crc_word0_reg, crc_word1_reg); // 一对 32-bit word 进入 CRC 后的结果
 
     task enqueue_c_mem_result;
         begin
@@ -698,9 +703,11 @@ module tpu_axi_fetch_top #(
                 m_axi_bready  <= 1'b0; // 不再等待 B
                 if (c_wr_head_valid) begin
                     c_wr_active_slot <= c_wr_head_sel; // 选择 FIFO 头作为当前 CRC buffer
-                    write_index      <= 8'd0; // 当前组从第 0/1 个 word 开始
+                    write_index      <= 8'd0; // 当前组从第 0 个 word 开始取
                     store_elem_index <= 4'd0; // 从 C[0] 开始
                     store_word_sel   <= 2'd0; // 先处理 C 元素低 32 bit
+                    crc_pair_valid   <= 1'b0; // 进入 W 后先锁存第一对 word，下一拍再计算 CRC
+                    crc_pair_last    <= 1'b0; // 清 pair-last 标记
                     write_burst_len  <= 8'd47; // 兼容 debug：一组仍是 48 个 word
                     write_burst_beats <= 9'd48; // 兼容 debug：一组 48 word
                     bg_write_state   <= BG_WRITE_W; // 进入内部 CRC 消费状态
@@ -711,30 +718,44 @@ module tpu_axi_fetch_top #(
                 m_axi_bready  <= 1'b0; // CRC 模式不等待写响应
 `ifdef SIMULATION
                 if (trace_matmul_write && ((group_count_reg - groups_left) < 32'd2)) begin
-                    $display("[tpu_crc] beat=%0d data0=%08x data1=%08x last=%0b",
+                    $display("[tpu_crc] load_pair_beat=%0d data0=%08x data1=%08x last=%0b valid=%0b",
                              write_index,
                              current_store_word,
-                             next_store_word,
-                             crc_pair_last);
+                             current_store_word1,
+                             crc_current_pair_last,
+                             crc_pair_valid);
                 end
 `endif
-                crc32_reg       <= crc_pair_next; // 本拍连续处理两个 32-bit word
-                final_crc32_reg <= ~crc_pair_next; // 保存当前进度的最终取反值，最后一对后就是全局 CRC
-                if (crc_pair_last) begin
-                    c_wr_valid[c_wr_active_slot] <= 1'b0; // 当前组 48 word 已完成 CRC，释放结果槽
-                    c_wr_head_sel <= next_slot_mod6(c_wr_head_sel, 3'd1); // FIFO head 前进到下一组
-                    if (c_wr_valid[next_slot_mod6(c_wr_active_slot, 3'd1)]) begin
-                        c_wr_active_slot <= next_slot_mod6(c_wr_active_slot, 3'd1); // 下一组已排队，继续 CRC
-                        write_index      <= 8'd0; // 新组从第 0/1 个 word 开始
-                        store_elem_index <= 4'd0; // 新组从 C[0] 开始
-                        store_word_sel   <= 2'd0; // 新组先处理低 32 bit
-                    end else begin
-                        bg_write_state <= BG_WRITE_IDLE; // 队列暂空，回到空闲等新结果
+                if (crc_pair_valid) begin
+                    crc32_reg       <= crc_pair_next; // 上一拍锁存的两个 word 进入 CRC
+                    final_crc32_reg <= ~crc_pair_next; // 保存当前进度的最终取反值
+                    if (crc_pair_last) begin
+                        c_wr_valid[c_wr_active_slot] <= 1'b0; // 当前组 48 word 已完成 CRC，释放结果槽
+                        c_wr_head_sel <= next_slot_mod6(c_wr_head_sel, 3'd1); // FIFO head 前进到下一组
+                        crc_pair_valid <= 1'b0; // 最后一对 word 已消费
+                        crc_pair_last  <= 1'b0; // 清 last 标记
+                        if (c_wr_valid[next_slot_mod6(c_wr_active_slot, 3'd1)]) begin
+                            c_wr_active_slot <= next_slot_mod6(c_wr_active_slot, 3'd1); // 下一组已排队，继续 CRC
+                            write_index      <= 8'd0; // 新组从第 0 个 word 开始取
+                            store_elem_index <= 4'd0; // 新组从 C[0] 开始
+                            store_word_sel   <= 2'd0; // 新组先处理低 32 bit
+                            bg_write_state   <= BG_WRITE_W; // 下一拍锁存新组第一个 word
+                        end else begin
+                            bg_write_state <= BG_WRITE_IDLE; // 队列暂空，回到空闲等新结果
+                        end
                     end
-                end else begin
-                    write_index      <= write_index + 8'd2; // 一拍处理两个 word
-                    store_word_sel   <= second_store_word_sel; // 前进两个 word 后的新 word 选择
-                    store_elem_index <= second_store_elem_index; // 前进两个 word 后的新元素选择
+                end
+
+                if (!crc_pair_valid || !crc_pair_last) begin
+                    crc_word0_reg   <= current_store_word; // 先把当前 pair 的第 0 个 word 锁进本地寄存器
+                    crc_word1_reg   <= current_store_word1; // 再锁存当前 pair 的第 1 个 word
+                    crc_pair_valid  <= 1'b1; // 下一拍用 crc_word0/1_reg 更新 CRC
+                    crc_pair_last   <= crc_current_pair_last; // 记录这个 pair 是否是一组最后一对
+                    if (!crc_current_pair_last) begin
+                        write_index      <= write_index + 8'd2; // 一拍取两个 word，CRC 吞吐恢复到 2 word/cycle
+                        store_word_sel   <= (next_store_word_sel == 2'd2) ? 2'd0 : (next_store_word_sel + 2'd1); // 跳过两个 word 后的 word_sel
+                        store_elem_index <= (next_store_word_sel == 2'd2) ? (next_store_elem_index + 4'd1) : next_store_elem_index; // 跳过两个 word 后的元素下标
+                    end
                 end
             end else begin
                 bg_write_state <= BG_WRITE_IDLE; // CRC 模式不会进入 AW/B，防御性回空闲
@@ -794,6 +815,10 @@ module tpu_axi_fetch_top #(
             write_burst_addr <= 32'd0; // 清当前写 burst 地址
             write_next_head_beat_offset <= 6'd0; // 清下次 head 偏移
             crc32_reg        <= 32'hffff_ffff; // CRC32 初始值
+            crc_word0_reg    <= 32'd0; // 清 CRC 输入 pair 第 0 个 word 寄存器
+            crc_word1_reg    <= 32'd0; // 清 CRC 输入 pair 第 1 个 word 寄存器
+            crc_pair_valid   <= 1'b0; // 清 CRC pair 有效标记
+            crc_pair_last    <= 1'b0; // 清 CRC 组尾 pair 标记
             final_crc32_reg  <= 32'd0; // 清最终 CRC
             infer_crc32_data_reg   <= 32'd0; // 清返回 CPU 的 CRC 数据
             infer_result_valid_low <= 2'b00; // 清低两个返回 valid lane
@@ -861,6 +886,10 @@ module tpu_axi_fetch_top #(
                         active_dst_base <= FIXED_DST_BASE; // 输出紧跟全部输入之后
                         groups_left     <= FIXED_GROUP_COUNT; // 固定 5000 组
                         crc32_reg       <= 32'hffff_ffff; // CRC32 初始值
+                        crc_word0_reg   <= 32'd0; // 清 CRC 输入 pair 第 0 个 word 寄存器
+                        crc_word1_reg   <= 32'd0; // 清 CRC 输入 pair 第 1 个 word 寄存器
+                        crc_pair_valid  <= 1'b0; // 清 CRC pair 有效标记
+                        crc_pair_last   <= 1'b0; // 清 CRC 组尾 pair 标记
                         final_crc32_reg <= 32'd0; // 清最终 CRC
                         compute_buf_sel <= 1'b0; // 第一组使用 buffer0
                         prefetch_buf_sel <= 1'b1; // 下一组预取到 buffer1
@@ -1194,6 +1223,10 @@ module tpu_axi_fetch_top #(
                         active_dst_base <= FIXED_DST_BASE; // 输出紧跟全部输入之后
                         groups_left     <= FIXED_GROUP_COUNT; // 固定 5000 组
                         crc32_reg       <= 32'hffff_ffff; // CRC32 初始值
+                        crc_word0_reg   <= 32'd0; // 清 CRC 输入 pair 第 0 个 word 寄存器
+                        crc_word1_reg   <= 32'd0; // 清 CRC 输入 pair 第 1 个 word 寄存器
+                        crc_pair_valid  <= 1'b0; // 清 CRC pair 有效标记
+                        crc_pair_last   <= 1'b0; // 清 CRC 组尾 pair 标记
                         final_crc32_reg <= 32'd0; // 清最终 CRC
                         compute_buf_sel <= 1'b0; // 第一组使用 buffer0
                         prefetch_buf_sel <= 1'b1; // 下一组预取到 buffer1
