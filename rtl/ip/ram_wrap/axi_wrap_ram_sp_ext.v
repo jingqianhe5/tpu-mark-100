@@ -256,15 +256,15 @@ end
 
 assign base_ram_addr = soc_sram_addr[21:2];
 assign base_ram_be_n = 4'b0000;
-assign base_ram_ce_n = ~(soc_sram_cs & (~choose_sram));
-assign base_ram_oe_n = soc_sram_we | choose_sram;
-assign base_ram_we_n = ~(soc_sram_we & (~choose_sram));
-assign base_ram_data = ((~choose_sram) & soc_sram_cs & soc_sram_we) ? soc_sram_wdata : 32'hzzzzzzzz;
+assign base_ram_ce_n = 1'b0;
+assign base_ram_oe_n = soc_sram_we;
+assign base_ram_we_n = ~soc_sram_we;
+assign base_ram_data = soc_sram_we ? soc_sram_wdata : 32'hzzzzzzzz;
 
 assign ext_ram_addr = soc_sram_addr[21:2];
 assign ext_ram_be_n = 4'b0000;
-assign ext_ram_ce_n = choose_sram ? ~soc_sram_cs : 1'b1;
-assign ext_ram_oe_n = choose_sram ? soc_sram_we : 1'b1;
+assign ext_ram_ce_n = 1'b0;
+assign ext_ram_oe_n = 1'b0;
 assign ext_ram_we_n = 1'b1;
 assign ext_ram_data = 32'hzzzzzzzz;
 
