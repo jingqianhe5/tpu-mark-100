@@ -44,7 +44,8 @@ module uart_top(
         RXD_i, RXD_o, RXD_oe,
         
         RTS,         CTS,         DSR,
-        DCD,         DTR,         RI
+        DCD,         DTR,         RI,
+        tx_byte_valid, tx_byte_data
     );
 
 input   PCLK,        PRST_;
@@ -67,6 +68,8 @@ output  RTS;
 input   CTS,         DSR,         DCD;
 output  DTR;
 input   RI;
+output  tx_byte_valid;
+output  [7:0] tx_byte_data;
 
 wire prst = !PRST_;
 wire we   = PSEL & PENABLE & PWRITE;      
@@ -99,7 +102,9 @@ uart_regs	regs(
     .int_o       ( INT     ),
     .tx2rx_en    (tx2rx_en ),
     .rx_en       (rx_en    ),
-    .usart_mode  (isomode  )
+    .usart_mode  (isomode  ),
+    .tx_byte_valid(tx_byte_valid),
+    .tx_byte_data (tx_byte_data )
 
 );
 

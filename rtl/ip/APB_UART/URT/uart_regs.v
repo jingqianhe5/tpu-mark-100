@@ -45,7 +45,9 @@ module uart_regs (clk, rst, clk_carrier,
     int_o,
     usart_mode,
     rx_en,
-    tx2rx_en
+    tx2rx_en,
+    tx_byte_valid,
+    tx_byte_data
 );
 input        clk;
 input        rst ;
@@ -69,6 +71,8 @@ output       int_o;
 output       usart_mode;
 output       tx2rx_en;
 output       rx_en;
+output       tx_byte_valid;
+output [7:0] tx_byte_data;
 
 wire [3:0]   modem_inputs;
 reg 	     enable;
@@ -385,6 +389,8 @@ always @(posedge clk )
       rx_pol <= dat_i[6];      end 
 
 assign tf_push = we & addr==`UART_REG_TR & !dlab;
+assign tx_byte_valid = fifo_write;
+assign tx_byte_data  = dat_i;
 always @(posedge clk )
   if (rst)
   begin

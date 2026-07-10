@@ -72,7 +72,7 @@ module soc_top #(parameter SIMULATION=1'b0)
 
     //------uart-------
     inout           UART_RX,            //串口RX接收
-    inout           UART_TX             //串口TX发送
+    output          UART_TX             //串口TX发送
 );
 
 wire cpu_clk;
@@ -847,18 +847,57 @@ wire uart0_dsr_i ;
 wire uart0_dcd_i ;
 wire uart0_dtr_o ;
 wire uart0_ri_i ;
+wire uart_tx_byte_valid;
+wire [7:0] uart_tx_byte_data;
+wire uart_tx_fifo_full;
+wire uart_tx_fifo_empty;
+wire uart_tx_fifo_valid;
+wire uart_tx_fifo_rd_en;
+wire [135:0] uart_tx_fifo_dout;
+wire uart_tx_txd;
+wire uart_tx_resetn;
 
-assign UART_TX = uart0_txd_o;
+assign UART_TX = uart_tx_txd;
 //assign UART_RX = uart0_rxd_oe ? 1'bz : uart0_rxd_o ;
 //assign UART_TX = uart0_txd_oe ? 1'bz : uart0_txd_o ;
 assign UART_RTS = uart0_rts_o ;
 assign UART_DTR = uart0_dtr_o ;
-assign uart0_txd_i = UART_TX;
+assign uart0_txd_i = 1'b1;
 assign uart0_rxd_i = UART_RX;
 assign uart0_cts_i = UART_CTS;
 assign uart0_dcd_i = UART_DCD;
 assign uart0_dsr_i = UART_DSR;
 assign uart0_ri_i = UART_RI ;  
+
+rst_sync u_rst_uart_tx(
+    .clk(clk),
+    .rst_n_in(sys_resetn),
+    .rst_n_out(uart_tx_resetn)
+);
+
+tpu_result_async_fifo u_uart_tx_async_fifo (
+    .rst         (~sys_resetn),
+    .wr_clk      (sys_clk),
+    .rd_clk      (clk),
+    .din         ({128'd0, uart_tx_byte_data}),
+    .wr_en       (uart_tx_byte_valid & ~uart_tx_fifo_full),
+    .rd_en       (uart_tx_fifo_rd_en),
+    .dout        (uart_tx_fifo_dout),
+    .full        (uart_tx_fifo_full),
+    .empty       (uart_tx_fifo_empty),
+    .valid       (uart_tx_fifo_valid),
+    .wr_rst_busy (),
+    .rd_rst_busy ()
+);
+
+uart_tx_50m u_uart_tx_50m (
+    .clk        (clk),
+    .rst_n      (uart_tx_resetn),
+    .fifo_data  (uart_tx_fifo_dout[7:0]),
+    .fifo_empty (uart_tx_fifo_empty),
+    .fifo_rd_en (uart_tx_fifo_rd_en),
+    .txd        (uart_tx_txd)
+);
 
 axi_uart_controller u_axi_uart_controller (
     .clk             (sys_clk         ),
@@ -923,7 +962,9 @@ axi_uart_controller u_axi_uart_controller (
     .uart0_dsr_i (uart0_dsr_i ),
     .uart0_dcd_i (uart0_dcd_i ),
     .uart0_ri_i (uart0_ri_i ),
-    .uart0_int (uart0_int )
+    .uart0_int (uart0_int ),
+    .uart_tx_byte_valid(uart_tx_byte_valid),
+    .uart_tx_byte_data (uart_tx_byte_data )
 );
 
 // DVI is unused in the matmul benchmark build.

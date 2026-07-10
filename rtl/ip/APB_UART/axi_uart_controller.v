@@ -101,7 +101,9 @@ uart0_dsr_i,
 uart0_dcd_i,
 uart0_ri_i,
 
-uart0_int 
+uart0_int,
+uart_tx_byte_valid,
+uart_tx_byte_data
 );
 
 parameter ADDR_APB = 20,
@@ -174,6 +176,8 @@ input               uart0_dcd_i;
 input               uart0_ri_i;
 
 output uart0_int;
+output uart_tx_byte_valid;
+output [7:0] uart_tx_byte_data;
 
 assign  dma_req_o      = 1'b0;
 //assign  nand_dma_ack_i = dma_ack_i;  //wtf this signal?
@@ -348,8 +352,9 @@ uart_top uart0
 .DSR               (uart0_dsr_i       ),
 .DCD               (uart0_dcd_i       ),
 .DTR               (uart0_dtr_o       ),
-.RI                (uart0_ri_i        )
+.RI                (uart0_ri_i        ),
+.tx_byte_valid     (uart_tx_byte_valid),
+.tx_byte_data      (uart_tx_byte_data )
 );
 
 endmodule
-

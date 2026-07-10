@@ -6,20 +6,13 @@
  * 输入地址、输出地址和 5000 组轮数都固定在 RTL 中，CPU 不搬运矩阵，也不计算 golden。
  */
 
-unsigned long UART_BASE = 0xbf000000u;
-
+#define UART_BASE_ADDR 0xbf000000u
+unsigned long UART_BASE = UART_BASE_ADDR;
 #define UART_THR 0x0u
 #define UART_IER 0x1u
 #define UART_FCR 0x2u
 #define UART_LCR 0x3u
-#define UART_LSR 0x5u
-#define UART_LSR_THRE 0x20u
-#define UART_LCR_DLAB 0x80u
-#define UART_LCR_8N1  0x03u
-
-#ifndef UART_DIVISOR_115200
-#define UART_DIVISOR_115200 41u
-#endif
+#define UART_MCR 0x4u
 
 #ifndef TPU_STATUS_POLL_LIMIT
 #define TPU_STATUS_POLL_LIMIT 200000000u
@@ -36,28 +29,26 @@ unsigned long UART_BASE = 0xbf000000u;
 /* UART 只用来打印跑分标记和 CRC，不参与计算。 */
 static inline uint8_t uart_read_reg(uint32_t offset)
 {
-    return *(volatile uint8_t *)(UART_BASE + offset);
+    return *(volatile uint8_t *)(UART_BASE_ADDR + offset);
 }
 
 static inline void uart_write_reg(uint32_t offset, uint8_t data)
 {
-    *(volatile uint8_t *)(UART_BASE + offset) = data;
+    *(volatile uint8_t *)(UART_BASE_ADDR + offset) = data;
 }
 
-static void uart_init_115200(void)
+static void uart_init_75m_115200(void)
 {
-    uart_write_reg(UART_LCR, UART_LCR_DLAB);
-    uart_write_reg(UART_THR, (uint8_t)(UART_DIVISOR_115200 & 0xffu));
-    uart_write_reg(UART_IER, (uint8_t)((UART_DIVISOR_115200 >> 8) & 0xffu));
-    uart_write_reg(UART_LCR, UART_LCR_8N1);
+    uart_write_reg(UART_FCR, 0x07u);
+    uart_write_reg(UART_LCR, 0x80u);
     uart_write_reg(UART_IER, 0x00u);
-    uart_write_reg(UART_FCR, 0x00u);
+    uart_write_reg(UART_THR, 0x1bu);
+    uart_write_reg(UART_LCR, 0x03u);
+    uart_write_reg(UART_MCR, 0x00u);
 }
 
 static void uart_putc(char ch)
 {
-    while ((uart_read_reg(UART_LSR) & UART_LSR_THRE) == 0) {
-    }
     uart_write_reg(UART_THR, (uint8_t)ch);
 }
 
@@ -65,13 +56,6 @@ static void uart_puts_raw(const char *s)
 {
     while (*s) {
         uart_putc(*s++);
-    }
-}
-
-static void uart_puts_fifo_fit(const char *s)
-{
-    while (*s) {
-        uart_write_reg(UART_THR, (uint8_t)*s++);
     }
 }
 
@@ -160,8 +144,8 @@ static int wait_tpu_done(uint32_t *status_out)
 
 int main(void)
 {
-    uart_init_115200();
-    uart_puts_fifo_fit("MATMUL_START\n");
+    uart_init_75m_115200();
+    uart_puts_raw("MATMUL_START\n");
 
     uint32_t status = tpu_clear();
 
