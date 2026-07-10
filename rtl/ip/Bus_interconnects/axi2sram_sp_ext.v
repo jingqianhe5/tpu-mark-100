@@ -192,7 +192,6 @@ module axi2sram_sp_ext #(
                     state_d        = READ;
                     //  we can request the first address, this saves us time
                     req_o          = 1'b1;
-                    addr_o         = s_araddr;
                     read_addr_d    = s_araddr;
                     read_pending_d = 1'b1;
                     read_pending_last_d = (s_arlen == 8'd0);
@@ -206,7 +205,6 @@ module axi2sram_sp_ext #(
                 end else if (s_awvalid) begin
                     s_awready = 1'b1;
                     s_wready  = 1'b0;
-                    addr_o         = s_awaddr;
                     // sample ax
                     ax_req_d_id     = s_awid;
                     ax_req_d_addr   = s_awaddr;
