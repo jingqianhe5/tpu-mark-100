@@ -66,6 +66,7 @@ module axi2sram_sp_ext #(
     output  reg [AXI_ADDR_WIDTH-1:0]   addr_o,
     output  reg [AXI_DATA_WIDTH/8-1:0] be_o,
     output  reg [AXI_DATA_WIDTH-1:0]   data_o,
+    output  reg [AXI_ADDR_WIDTH-1:0]   read_addr_o,
     input   [AXI_DATA_WIDTH-1:0]   data_i
 );
     // AXI has the following rules governing the use of bursts:
@@ -139,6 +140,7 @@ module axi2sram_sp_ext #(
         we_o   = 1'b0;
         req_o  = 1'b0;
         addr_o = 'h0;
+        read_addr_o = req_addr_q;
         // AXI assignments
         // request
         s_awready = 1'b0;
@@ -174,6 +176,7 @@ module axi2sram_sp_ext #(
                     //  we can request the first address, this saves us time
                     req_o          = 1'b1;
                     addr_o         = s_araddr;
+                    read_addr_o    = s_araddr;
                     // save the address
                     req_addr_d     = get_next_addr(s_araddr, s_arburst);
                     // save the ar_len
@@ -229,6 +232,7 @@ module axi2sram_sp_ext #(
                 s_rlast  = read_last_now;
                 req_o    = 1'b1;
                 addr_o   = req_addr_q;
+                read_addr_o = req_addr_q;
                 if (s_rready) begin
                     if (read_last_now) begin
                         req_o   = 1'b0;
@@ -251,6 +255,7 @@ module axi2sram_sp_ext #(
                 // ----------------------------
                 // handle the correct burst type
                 addr_o = req_addr_q;
+                read_addr_o = req_addr_q;
                 // we need to change the address here for the upcoming request
                 // we can decrease the counter as the master has consumed the read data
                 cnt_d = cnt_q + 1;

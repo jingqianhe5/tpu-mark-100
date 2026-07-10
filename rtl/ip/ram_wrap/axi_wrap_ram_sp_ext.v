@@ -137,6 +137,7 @@ wire        ram_bready ;
 
 //sram signal
 wire  [31:0]    soc_sram_addr;
+wire  [31:0]    soc_sram_read_addr;
 wire            soc_sram_cs;
 wire            soc_sram_we;
 wire  [3:0]     soc_sram_be;
@@ -234,6 +235,7 @@ axi2sram_sp_ext #(
     .addr_o                  ( soc_sram_addr     ),
     .be_o                    ( soc_sram_be       ),
     .data_o                  ( soc_sram_wdata    ),
+    .read_addr_o             ( soc_sram_read_addr ),
     .data_i                  ( soc_sram_rdata    )
 );
 
@@ -244,13 +246,22 @@ wire choose_sram =
     ar_accept ? ram_araddr[22] :
     aw_accept ? ram_awaddr[22] :
     active_choose_sram; // 1:ExtRAM 0:BaseRAM
+wire ext_read_active = soc_sram_cs & ~soc_sram_we & choose_sram;
+wire [19:0] ext_ram_addr_live = soc_sram_read_addr[21:2];
+reg  [19:0] ext_ram_addr_hold;
 always @(posedge aclk or negedge aresetn) begin
     if (~aresetn) begin
         active_choose_sram <= 1'b0;
+        ext_ram_addr_hold  <= 20'd0;
     end else if (ar_accept) begin
         active_choose_sram <= ram_araddr[22];
+        if (ram_araddr[22]) begin
+            ext_ram_addr_hold <= ram_araddr[21:2];
+        end
     end else if (aw_accept) begin
         active_choose_sram <= ram_awaddr[22];
+    end else if (ext_read_active) begin
+        ext_ram_addr_hold <= ext_ram_addr_live;
     end
 end
 
@@ -261,7 +272,7 @@ assign base_ram_oe_n = soc_sram_we;
 assign base_ram_we_n = ~soc_sram_we;
 assign base_ram_data = soc_sram_we ? soc_sram_wdata : 32'hzzzzzzzz;
 
-assign ext_ram_addr = soc_sram_addr[21:2];
+assign ext_ram_addr = ext_read_active ? ext_ram_addr_live : ext_ram_addr_hold;
 assign ext_ram_be_n = 4'b0000;
 assign ext_ram_ce_n = 1'b0;
 assign ext_ram_oe_n = 1'b0;
