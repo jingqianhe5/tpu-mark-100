@@ -849,8 +849,13 @@ wire uart0_dtr_o ;
 wire uart0_ri_i ;
     wire uart_tx_byte_valid;
     wire [7:0] uart_tx_byte_data;
+    wire uart_tx_50m_txd;
+    wire [7:0] uart_tx_fifo_dout;
+    wire       uart_tx_fifo_full;
+    wire       uart_tx_fifo_empty;
+    wire       uart_tx_fifo_rd_en;
     
-    assign UART_TX = uart0_txd_o;
+    assign UART_TX = SIMULATION ? uart0_txd_o : uart_tx_50m_txd;
 //assign UART_RX = uart0_rxd_oe ? 1'bz : uart0_rxd_o ;
 //assign UART_TX = uart0_txd_oe ? 1'bz : uart0_txd_o ;
 assign UART_RTS = uart0_rts_o ;
@@ -928,6 +933,29 @@ assign uart0_ri_i = UART_RI ;
     .uart0_int (uart0_int ),
     .uart_tx_byte_valid(uart_tx_byte_valid),
     .uart_tx_byte_data (uart_tx_byte_data )
+);
+
+uart_byte_async_fifo u_uart_tx_fifo (
+    .rst   (reset | ~sys_resetn),
+    .wr_clk(sys_clk),
+    .rd_clk(clk),
+    .din   (uart_tx_byte_data),
+    .wr_en (uart_tx_byte_valid & ~uart_tx_fifo_full),
+    .rd_en (uart_tx_fifo_rd_en),
+    .dout  (uart_tx_fifo_dout),
+    .full  (uart_tx_fifo_full),
+    .empty (uart_tx_fifo_empty)
+);
+
+uart_tx_50m #(
+    .CLKS_PER_BIT(434)
+) u_uart_tx_50m (
+    .clk       (clk),
+    .rst_n     (~reset),
+    .fifo_data (uart_tx_fifo_dout),
+    .fifo_empty(uart_tx_fifo_empty),
+    .fifo_rd_en(uart_tx_fifo_rd_en),
+    .txd       (uart_tx_50m_txd)
 );
 
 // DVI is unused in the matmul benchmark build.

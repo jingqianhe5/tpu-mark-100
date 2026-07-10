@@ -12,6 +12,7 @@ module uart_tx_50m #(
     reg [3:0]  bit_idx;
     reg [9:0]  shift_reg;
     reg        busy;
+    localparam [15:0] BIT_TICKS = CLKS_PER_BIT[15:0] - 16'd1;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -34,7 +35,7 @@ module uart_tx_50m #(
                     busy       <= 1'b1;
                     txd        <= 1'b0;
                 end
-            end else if (baud_cnt == CLKS_PER_BIT - 1) begin
+            end else if (baud_cnt == BIT_TICKS) begin
                 baud_cnt  <= 16'd0;
                 shift_reg <= {1'b1, shift_reg[9:1]};
                 bit_idx   <= bit_idx + 4'd1;
