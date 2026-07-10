@@ -51,8 +51,6 @@ static void uart_init_75m_115200(void)
 
 static void uart_putc(char ch)
 {
-    while ((uart_read_reg(UART_LSR) & UART_LSR_THRE) == 0) {
-    }
     uart_write_reg(UART_THR, (uint8_t)ch);
 }
 
