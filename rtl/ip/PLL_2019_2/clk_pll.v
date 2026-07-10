@@ -27,7 +27,6 @@ module clk_pll_clk_wiz (
 );
 
     wire clkfbout;
-    wire clkfbout_buf;
     wire cpu_clk_unbuf;
     wire sys_clk_unbuf;
     MMCME2_ADV #(
@@ -85,7 +84,7 @@ module clk_pll_clk_wiz (
         .CLKOUT4              (),
         .CLKOUT5              (),
         .CLKOUT6              (),
-        .CLKFBIN              (clkfbout_buf),
+        .CLKFBIN              (clkfbout),
         .CLKIN1               (clk_in1),
         .CLKIN2               (1'b0),
         .CLKINSEL             (1'b1),
@@ -105,11 +104,6 @@ module clk_pll_clk_wiz (
         .PSDONE               (),
         .PWRDWN               (1'b0),
         .RST                  (~resetn)
-    );
-
-    BUFG clkf_buf (
-        .I (clkfbout),
-        .O (clkfbout_buf)
     );
 
     BUFG clkout1_buf (
