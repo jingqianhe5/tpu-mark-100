@@ -156,7 +156,7 @@ module axi2sram_sp_ext #(
         be_o   = {AXI_DATA_WIDTH/8{1'b1}};
         we_o   = 1'b0;
         req_o  = 1'b0;
-        addr_o = 'h0;
+        addr_o = req_addr_q;
         // AXI assignments
         // request
         s_awready = 1'b0;
@@ -245,9 +245,9 @@ module axi2sram_sp_ext #(
             READ: begin
                 // 读地址和读数据各走一级流水。只要响应缓冲还有空间，
                 // 下一拍地址就继续推出去；R 通道则从缓冲中按 AXI ready 消费。
+                addr_o = req_addr_q; // 地址输出保持寄存值，不让 read_can_issue 进入 SRAM 地址路径
                 if (read_can_issue) begin
                     req_o               = 1'b1;
-                    addr_o              = req_addr_q;
                     read_addr_d         = req_addr_q;
                     read_pending_d      = 1'b1;
                     read_pending_last_d = (cnt_q == ax_req_q_len);
