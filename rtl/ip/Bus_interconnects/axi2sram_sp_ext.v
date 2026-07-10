@@ -106,8 +106,22 @@ module axi2sram_sp_ext #(
     
     reg [AXI_ADDR_WIDTH-1:0] req_addr_d, req_addr_q;
     reg [7:0]                cnt_d, cnt_q;
-    reg [AXI_DATA_WIDTH-1:0] read_data_q;
-    wire                     read_last_now = (cnt_q == ax_req_q_len + 8'd1);
+    reg                      read_pending_d, read_pending_q;
+    reg                      read_pending_last_d, read_pending_last_q;
+    reg [AXI_ADDR_WIDTH-1:0] read_addr_d;
+    reg [AXI_DATA_WIDTH-1:0] read_fifo0_data_q, read_fifo1_data_q;
+    reg                      read_fifo0_valid_q, read_fifo1_valid_q;
+    reg                      read_fifo0_last_q, read_fifo1_last_q;
+
+    wire read_pop  = (state_q == READ) && read_fifo0_valid_q && s_rready;
+    wire read_push = read_pending_q;
+    wire [1:0] read_fifo_count =
+        {1'b0, read_fifo0_valid_q} + {1'b0, read_fifo1_valid_q};
+    wire [1:0] read_fifo_count_after =
+        read_fifo_count - {1'b0, read_pop} + {1'b0, read_push};
+    wire read_can_issue =
+        (state_q == READ) && (cnt_q < ax_req_q_len + 8'd1) &&
+        (read_fifo_count_after <= 2'd1);
 
     function automatic [AXI_ADDR_WIDTH-1:0] get_next_addr;
         input [AXI_ADDR_WIDTH-1:0] addr;
@@ -134,22 +148,25 @@ module axi2sram_sp_ext #(
         ax_req_d_burst  = ax_req_q_burst;
         req_addr_d      = req_addr_q;
         cnt_d           = cnt_q;
+        read_pending_d      = 1'b0;
+        read_pending_last_d = 1'b0;
+        read_addr_d         = read_addr_o;
         // Memory default assignments
         data_o = s_wdata;
         be_o   = {AXI_DATA_WIDTH/8{1'b1}};
         we_o   = 1'b0;
         req_o  = 1'b0;
         addr_o = 'h0;
-        read_addr_o = req_addr_q;
         // AXI assignments
         // request
         s_awready = 1'b0;
         s_arready = 1'b0;
         // read response channel
-        s_rvalid  = 1'b0;
+        s_rvalid  = (state_q == READ) && read_fifo0_valid_q;
         s_rresp   = 'h0;
-        s_rlast   = 'h0;
+        s_rlast   = read_fifo0_last_q;
         s_rid     = ax_req_q_id;
+        s_rdata   = read_fifo0_data_q;
         // slave write data channel
         s_wready  = 1'b0;
         // write response channel
@@ -176,7 +193,9 @@ module axi2sram_sp_ext #(
                     //  we can request the first address, this saves us time
                     req_o          = 1'b1;
                     addr_o         = s_araddr;
-                    read_addr_o    = s_araddr;
+                    read_addr_d    = s_araddr;
+                    read_pending_d = 1'b1;
+                    read_pending_last_d = (s_arlen == 8'd0);
                     // save the address
                     req_addr_d     = get_next_addr(s_araddr, s_arburst);
                     // save the ar_len
@@ -224,24 +243,22 @@ module axi2sram_sp_ext #(
             end
 
             READ: begin
-                // 返回上一拍地址对应的数据。若 AXI master 接收当前 beat，
-                // 同一拍把下一个 SRAM 地址送出去，下一拍即可继续返回数据。
-                s_rvalid = 1'b1;
-                s_rdata  = read_data_q;
-                s_rid    = ax_req_q_id;
-                s_rlast  = read_last_now;
-                req_o    = 1'b1;
-                addr_o   = req_addr_q;
-                read_addr_o = req_addr_q;
-                if (s_rready) begin
-                    if (read_last_now) begin
-                        req_o   = 1'b0;
-                        state_d = IDLE;
-                    end else begin
-                        req_addr_d = get_next_addr(req_addr_q, ax_req_q_burst);
-                        cnt_d      = cnt_q + 1;
-                        state_d    = READ;
-                    end
+                // 读地址和读数据各走一级流水。只要响应缓冲还有空间，
+                // 下一拍地址就继续推出去；R 通道则从缓冲中按 AXI ready 消费。
+                if (read_can_issue) begin
+                    req_o               = 1'b1;
+                    addr_o              = req_addr_q;
+                    read_addr_d         = req_addr_q;
+                    read_pending_d      = 1'b1;
+                    read_pending_last_d = (cnt_q == ax_req_q_len);
+                    req_addr_d          = get_next_addr(req_addr_q, ax_req_q_burst);
+                    cnt_d               = cnt_q + 1;
+                end
+                if ((cnt_q == ax_req_q_len + 8'd1) &&
+                    !read_pending_q && !read_pending_d &&
+                    !read_fifo1_valid_q &&
+                    (!read_fifo0_valid_q || read_pop)) begin
+                    state_d = IDLE;
                 end
             end
 
@@ -255,7 +272,6 @@ module axi2sram_sp_ext #(
                 // ----------------------------
                 // handle the correct burst type
                 addr_o = req_addr_q;
-                read_addr_o = req_addr_q;
                 // we need to change the address here for the upcoming request
                 // we can decrease the counter as the master has consumed the read data
                 cnt_d = cnt_q + 1;
@@ -315,7 +331,15 @@ module axi2sram_sp_ext #(
             ax_req_q_size   <= 3'h0;
             req_addr_q      <= 'h0;
             cnt_q           <= 8'h0;
-            read_data_q     <= 'h0;
+            read_pending_q      <= 1'b0;
+            read_pending_last_q <= 1'b0;
+            read_addr_o         <= 'h0;
+            read_fifo0_data_q   <= 'h0;
+            read_fifo1_data_q   <= 'h0;
+            read_fifo0_valid_q  <= 1'b0;
+            read_fifo1_valid_q  <= 1'b0;
+            read_fifo0_last_q   <= 1'b0;
+            read_fifo1_last_q   <= 1'b0;
         end else begin
             state_q         <= state_d;
             ax_req_q_addr   <= ax_req_d_addr;
@@ -325,9 +349,52 @@ module axi2sram_sp_ext #(
             ax_req_q_size   <= ax_req_d_size;
             req_addr_q      <= req_addr_d;
             cnt_q           <= cnt_d;
-            if ((state_q == IDLE && s_arvalid) ||
-                (state_q == READ && s_rready && !read_last_now)) begin
-                read_data_q <= data_i;
+            read_pending_q      <= read_pending_d;
+            read_pending_last_q <= read_pending_last_d;
+            read_addr_o         <= read_addr_d;
+
+            case ({read_pop, read_push})
+                2'b00: begin
+                    read_fifo0_valid_q <= read_fifo0_valid_q;
+                    read_fifo1_valid_q <= read_fifo1_valid_q;
+                end
+                2'b01: begin
+                    if (!read_fifo0_valid_q) begin
+                        read_fifo0_data_q  <= data_i;
+                        read_fifo0_last_q  <= read_pending_last_q;
+                        read_fifo0_valid_q <= 1'b1;
+                    end else if (!read_fifo1_valid_q) begin
+                        read_fifo1_data_q  <= data_i;
+                        read_fifo1_last_q  <= read_pending_last_q;
+                        read_fifo1_valid_q <= 1'b1;
+                    end
+                end
+                2'b10: begin
+                    read_fifo0_data_q   <= read_fifo1_data_q;
+                    read_fifo0_last_q   <= read_fifo1_last_q;
+                    read_fifo0_valid_q  <= read_fifo1_valid_q;
+                    read_fifo1_valid_q  <= 1'b0;
+                end
+                2'b11: begin
+                    if (read_fifo1_valid_q) begin
+                        read_fifo0_data_q   <= read_fifo1_data_q;
+                        read_fifo0_last_q   <= read_fifo1_last_q;
+                        read_fifo0_valid_q  <= 1'b1;
+                        read_fifo1_data_q   <= data_i;
+                        read_fifo1_last_q   <= read_pending_last_q;
+                        read_fifo1_valid_q  <= 1'b1;
+                    end else begin
+                        read_fifo0_data_q   <= data_i;
+                        read_fifo0_last_q   <= read_pending_last_q;
+                        read_fifo0_valid_q  <= 1'b1;
+                        read_fifo1_valid_q  <= 1'b0;
+                    end
+                end
+            endcase
+
+            if (state_q == IDLE && state_d == READ) begin
+                read_fifo0_valid_q <= 1'b0;
+                read_fifo1_valid_q <= 1'b0;
             end
         end
     end
