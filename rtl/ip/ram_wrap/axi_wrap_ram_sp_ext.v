@@ -240,8 +240,10 @@ axi2sram_sp_ext #(
 );
 
 reg active_choose_sram;
+reg base_write_active;
 wire ar_accept = ram_arvalid & ram_arready;
 wire aw_accept = ram_awvalid & ram_awready;
+wire b_accept  = ram_bvalid & ram_bready;
 wire choose_sram =
     ar_accept ? ram_araddr[22] :
     aw_accept ? ram_awaddr[22] :
@@ -249,14 +251,18 @@ wire choose_sram =
 always @(posedge aclk or negedge aresetn) begin
     if (~aresetn) begin
         active_choose_sram <= 1'b0;
+        base_write_active  <= 1'b0;
     end else if (ar_accept) begin
         active_choose_sram <= ram_araddr[22];
     end else if (aw_accept) begin
         active_choose_sram <= ram_awaddr[22];
+        base_write_active  <= ~ram_awaddr[22];
+    end else if (b_accept) begin
+        base_write_active  <= 1'b0;
     end
 end
 
-assign base_ram_addr = soc_sram_we ? soc_sram_addr[21:2] : soc_sram_read_addr[21:2];
+assign base_ram_addr = base_write_active ? soc_sram_addr[21:2] : soc_sram_read_addr[21:2];
 assign base_ram_be_n = 4'b0000;
 assign base_ram_ce_n = 1'b0;
 assign base_ram_oe_n = soc_sram_we;

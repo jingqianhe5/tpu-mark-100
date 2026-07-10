@@ -205,7 +205,7 @@ module axi2sram_sp_ext #(
                 // ------------
                 end else if (s_awvalid) begin
                     s_awready = 1'b1;
-                    s_wready  = 1'b1;
+                    s_wready  = 1'b0;
                     addr_o         = s_awaddr;
                     // sample ax
                     ax_req_d_id     = s_awid;
@@ -213,17 +213,9 @@ module axi2sram_sp_ext #(
                     ax_req_d_len    = s_awlen;
                     ax_req_d_size   = s_awsize;
                     ax_req_d_burst  = s_awburst;
-                    // we've got our first w_valid so start the write process
-                if (s_wvalid) begin
-                    req_o          = 1'b1;
-                    we_o           = 1'b1;
-                    be_o           = s_wstrb;
-                    req_addr_d     = get_next_addr(s_awaddr, s_awburst);
-                    state_d        = (s_wlast) ? SEND_B : WRITE;
-                    cnt_d          = 1;
-                    // we still have to wait for the first w_valid to arrive
-                    end else
-                        state_d = WAIT_WVALID;
+                    // 地址先进入寄存状态，下一拍再接收 W 数据。这样外部 SRAM
+                    // 地址选择不需要由组合的 WVALID/we_o 直接驱动。
+                    state_d = WAIT_WVALID;
                 end
             end
 
