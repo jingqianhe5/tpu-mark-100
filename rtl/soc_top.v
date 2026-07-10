@@ -72,7 +72,7 @@ module soc_top #(parameter SIMULATION=1'b0)
 
     //------uart-------
     inout           UART_RX,            //串口RX接收
-    inout           UART_TX             //串口TX发送
+    output          UART_TX             //串口TX发送
 );
 
 wire cpu_clk;

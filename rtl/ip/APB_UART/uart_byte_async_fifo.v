@@ -19,6 +19,10 @@ module uart_byte_async_fifo (
     reg [PTR_W-1:0] wr_gray;
     reg [PTR_W-1:0] rd_gray;
     (* ASYNC_REG = "TRUE" *)
+    reg [1:0] wr_rst_sync;
+    (* ASYNC_REG = "TRUE" *)
+    reg [1:0] rd_rst_sync;
+    (* ASYNC_REG = "TRUE" *)
     reg [PTR_W-1:0] rd_gray_w1;
     (* ASYNC_REG = "TRUE" *)
     reg [PTR_W-1:0] rd_gray_w2;
@@ -35,6 +39,8 @@ module uart_byte_async_fifo (
     wire [PTR_W-1:0] rd_bin_next = rd_bin + {{PTR_W-1{1'b0}}, rd_fire};
     wire [PTR_W-1:0] wr_gray_next = (wr_bin_next >> 1) ^ wr_bin_next;
     wire [PTR_W-1:0] rd_gray_next = (rd_bin_next >> 1) ^ rd_bin_next;
+    wire wr_rst = wr_rst_sync[1];
+    wire rd_rst = rd_rst_sync[1];
 
     assign full_int = (wr_gray == {~rd_gray_w2[PTR_W-1:PTR_W-2], rd_gray_w2[PTR_W-3:0]});
     assign empty_int = (rd_gray == wr_gray_r2);
@@ -44,6 +50,22 @@ module uart_byte_async_fifo (
 
     always @(posedge wr_clk or posedge rst) begin
         if (rst) begin
+            wr_rst_sync <= 2'b11;
+        end else begin
+            wr_rst_sync <= {wr_rst_sync[0], 1'b0};
+        end
+    end
+
+    always @(posedge rd_clk or posedge rst) begin
+        if (rst) begin
+            rd_rst_sync <= 2'b11;
+        end else begin
+            rd_rst_sync <= {rd_rst_sync[0], 1'b0};
+        end
+    end
+
+    always @(posedge wr_clk) begin
+        if (wr_rst) begin
             wr_bin <= {PTR_W{1'b0}};
             wr_gray <= {PTR_W{1'b0}};
             rd_gray_w1 <= {PTR_W{1'b0}};
@@ -59,8 +81,8 @@ module uart_byte_async_fifo (
         end
     end
 
-    always @(posedge rd_clk or posedge rst) begin
-        if (rst) begin
+    always @(posedge rd_clk) begin
+        if (rd_rst) begin
             rd_bin <= {PTR_W{1'b0}};
             rd_gray <= {PTR_W{1'b0}};
             wr_gray_r1 <= {PTR_W{1'b0}};
