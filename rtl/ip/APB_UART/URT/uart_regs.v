@@ -527,8 +527,7 @@ always @(posedge clk )
     else     lsr7r <= lsr_mask ? 0 : lsr7r || (lsr7 && ~lsr7_d);
 
 reg [8:0] M_cnt;
-wire [23:0] baud_dl = (dl == 24'd27) ? 24'd41 : dl;
-wire [8:0] M_next = M_cnt + baud_dl[`UART_DL3];
+wire [8:0] M_next = M_cnt + dl[`UART_DL3];
 wire M_toggle = M_cnt[8] ^ M_next[8];
 
 always @(posedge clk ) 
@@ -538,7 +537,7 @@ begin
        M_cnt <= 9'h0;
     end
     else if (start_dlc | ~ (|dlc)) begin
-       dlc <= baud_dl - 1 + M_toggle;    
+       dlc <= dl - 1 + M_toggle;    
        M_cnt <= M_next;
     end
     else
@@ -549,7 +548,7 @@ always @(posedge clk )
 begin
     if (rst)
 	      enable <= 1'b0;
-    else  if (|baud_dl & ~(|dlc))     
+    else  if (|dl & ~(|dlc))     
         enable <= 1'b1;
     else
 	enable <= 1'b0;

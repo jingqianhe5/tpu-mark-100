@@ -6,13 +6,9 @@
  * 输入地址、输出地址和 5000 组轮数都固定在 RTL 中，CPU 不搬运矩阵，也不计算 golden。
  */
 
-#define UART_BASE_ADDR 0xbf000000u
-unsigned long UART_BASE = UART_BASE_ADDR;
+unsigned long UART_BASE = 0xbf000000u;
+
 #define UART_THR 0x0u
-#define UART_IER 0x1u
-#define UART_FCR 0x2u
-#define UART_LCR 0x3u
-#define UART_MCR 0x4u
 #define UART_LSR 0x5u
 #define UART_LSR_THRE 0x20u
 
@@ -31,26 +27,18 @@ unsigned long UART_BASE = UART_BASE_ADDR;
 /* UART 只用来打印跑分标记和 CRC，不参与计算。 */
 static inline uint8_t uart_read_reg(uint32_t offset)
 {
-    return *(volatile uint8_t *)(UART_BASE_ADDR + offset);
+    return *(volatile uint8_t *)(UART_BASE + offset);
 }
 
 static inline void uart_write_reg(uint32_t offset, uint8_t data)
 {
-    *(volatile uint8_t *)(UART_BASE_ADDR + offset) = data;
-}
-
-static void uart_init_75m_115200(void)
-{
-    uart_write_reg(UART_FCR, 0x07u);
-    uart_write_reg(UART_LCR, 0x80u);
-    uart_write_reg(UART_IER, 0x00u);
-    uart_write_reg(UART_THR, 0x29u);
-    uart_write_reg(UART_LCR, 0x03u);
-    uart_write_reg(UART_MCR, 0x00u);
+    *(volatile uint8_t *)(UART_BASE + offset) = data;
 }
 
 static void uart_putc(char ch)
 {
+    while ((uart_read_reg(UART_LSR) & UART_LSR_THRE) == 0) {
+    }
     uart_write_reg(UART_THR, (uint8_t)ch);
 }
 
@@ -146,7 +134,6 @@ static int wait_tpu_done(uint32_t *status_out)
 
 int main(void)
 {
-    uart_init_75m_115200();
     uart_puts_raw("MATMUL_START\n");
 
     uint32_t status = tpu_clear();
