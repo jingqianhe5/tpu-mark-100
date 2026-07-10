@@ -13,6 +13,8 @@ unsigned long UART_BASE = UART_BASE_ADDR;
 #define UART_FCR 0x2u
 #define UART_LCR 0x3u
 #define UART_MCR 0x4u
+#define UART_LSR 0x5u
+#define UART_LSR_THRE 0x20u
 
 #ifndef TPU_STATUS_POLL_LIMIT
 #define TPU_STATUS_POLL_LIMIT 200000000u
@@ -42,13 +44,15 @@ static void uart_init_75m_115200(void)
     uart_write_reg(UART_FCR, 0x07u);
     uart_write_reg(UART_LCR, 0x80u);
     uart_write_reg(UART_IER, 0x00u);
-    uart_write_reg(UART_THR, 0x1bu);
+    uart_write_reg(UART_THR, 0x29u);
     uart_write_reg(UART_LCR, 0x03u);
     uart_write_reg(UART_MCR, 0x00u);
 }
 
 static void uart_putc(char ch)
 {
+    while ((uart_read_reg(UART_LSR) & UART_LSR_THRE) == 0) {
+    }
     uart_write_reg(UART_THR, (uint8_t)ch);
 }
 
