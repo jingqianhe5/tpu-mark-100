@@ -31,8 +31,12 @@ THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 --------------------------------------------------------------------------------
 ------------------------------------------------------------------------------*/
 
-module axi_wrap_ram_sp_ext (
+module axi_wrap_ram_sp_ext #(
+    parameter integer READ_WAIT_CYCLES = 0
+)(
     input         aclk,
+    input         sram_addr_clk,
+    input         sram_sample_clk,
     input         aresetn,
     //ar
     input  [5 :0] axi_arid   ,
@@ -189,7 +193,8 @@ assign ram_bready = axi_bready ;
 axi2sram_sp_ext #(
     .AXI_ID_WIDTH   ( 6  ),
     .AXI_ADDR_WIDTH ( 32 ),
-    .AXI_DATA_WIDTH ( 32 ))
+    .AXI_DATA_WIDTH ( 32 ),
+    .READ_WAIT_CYCLES(READ_WAIT_CYCLES))
  u_axi_sram_sp (
     .clk                     ( aclk         ),
     .resetn                  ( aresetn      ),
@@ -241,7 +246,14 @@ axi2sram_sp_ext #(
 
 reg active_choose_sram;
 reg base_write_active;
+reg base_write_drive;
 reg [31:0] base_write_addr;
+// ExtRAM addresses launch at 157.5 degrees.  The 247.5-degree clock samples the
+// previous word 3.33 ns after the next address launch, inside the tAA/tOHA
+// data-valid window while retaining one word per 75 MHz cycle.
+(* KEEP = "TRUE" *) reg [19:0] ext_ram_addr_prepare_q;
+(* IOB = "TRUE" *) reg [19:0] ext_ram_addr_q;
+(* IOB = "TRUE" *) reg [31:0] ext_ram_data_sample_q;
 wire ar_accept = ram_arvalid & ram_arready;
 wire aw_accept = ram_awvalid & ram_awready;
 wire b_accept  = ram_bvalid & ram_bready;
@@ -253,34 +265,54 @@ always @(posedge aclk or negedge aresetn) begin
     if (~aresetn) begin
         active_choose_sram <= 1'b0;
         base_write_active  <= 1'b0;
+        base_write_drive   <= 1'b0;
         base_write_addr    <= 32'd0;
     end else if (ar_accept) begin
         active_choose_sram <= ram_araddr[22];
     end else if (aw_accept) begin
         active_choose_sram <= ram_awaddr[22];
         base_write_active  <= ~ram_awaddr[22];
+        base_write_drive   <= 1'b0;
         base_write_addr    <= ram_awaddr;
     end else if (b_accept) begin
         base_write_active  <= 1'b0;
+        base_write_drive   <= 1'b0;
+    end else if (base_write_active && !base_write_drive) begin
+        base_write_drive   <= 1'b1;
     end else if (base_write_active && soc_sram_we) begin
         base_write_addr    <= base_write_addr + 32'd4;
     end
 end
 
+always @(posedge aclk) begin
+    if (soc_sram_cs && !soc_sram_we && choose_sram)
+        ext_ram_addr_prepare_q <= soc_sram_addr[21:2];
+end
+
+always @(posedge sram_addr_clk) begin
+    ext_ram_addr_q <= ext_ram_addr_prepare_q;
+end
+
+// No reset is needed: read metadata remains empty during reset, so sampled bus
+// contents are ignored until a real ExtRAM response reaches the AXI pipeline.
+always @(posedge sram_sample_clk) begin
+    ext_ram_data_sample_q <= ext_ram_data;
+end
+
 assign base_ram_addr = base_write_active ? base_write_addr[21:2] : soc_sram_read_addr[21:2];
 assign base_ram_be_n = 4'b0000;
 assign base_ram_ce_n = 1'b0;
-assign base_ram_oe_n = soc_sram_we;
+assign base_ram_oe_n = base_write_active;
 assign base_ram_we_n = ~soc_sram_we;
-assign base_ram_data = soc_sram_we ? soc_sram_wdata : 32'hzzzzzzzz;
+assign base_ram_data = base_write_drive ? soc_sram_wdata : 32'hzzzzzzzz;
 
-assign ext_ram_addr = soc_sram_read_addr[21:2];
+assign ext_ram_addr = ext_ram_addr_q;
 assign ext_ram_be_n = 4'b0000;
 assign ext_ram_ce_n = 1'b0;
 assign ext_ram_oe_n = 1'b0;
 assign ext_ram_we_n = 1'b1;
 assign ext_ram_data = 32'hzzzzzzzz;
 
-assign soc_sram_rdata = choose_sram ? ext_ram_data : base_ram_data;
+assign soc_sram_rdata = choose_sram ? ext_ram_data_sample_q : base_ram_data;
 
 endmodule

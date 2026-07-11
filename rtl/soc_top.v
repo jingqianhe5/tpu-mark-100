@@ -31,10 +31,14 @@ THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 --------------------------------------------------------------------------------
 ------------------------------------------------------------------------------*/
 
+`timescale 1ns/1ps
 `include "config.h"
 `include "mycpu.h"
 
-module soc_top #(parameter SIMULATION=1'b0)
+module soc_top #(
+    parameter SIMULATION=1'b0,
+    parameter integer SRAM_READ_WAIT_CYCLES=1
+)
 (
     input           clk,                //50MHz 时钟输入
     input           reset,              //BTN6手动复位按钮开关，带消抖电路，按下时为1
@@ -64,6 +68,7 @@ module soc_top #(parameter SIMULATION=1'b0)
     output          base_ram_we_n,      //BaseRAM写使能，低有效
     //ExtRAM信号
     inout  [31:0]   ext_ram_data,       //ExtRAM数据
+    (* SLEW = "FAST", DRIVE = 12 *)
     output [19:0]   ext_ram_addr,       //ExtRAM地址
     output [ 3:0]   ext_ram_be_n,       //ExtRAM字节使能，低有效。如果不使用字节使能，请保持为0
     output          ext_ram_ce_n,       //ExtRAM片选，低有效
@@ -72,7 +77,7 @@ module soc_top #(parameter SIMULATION=1'b0)
 
     //------uart-------
     inout           UART_RX,            //串口RX接收
-    inout           UART_TX             //串口TX发送
+    output          UART_TX             //串口TX发送
 );
 
 wire cpu_clk;
@@ -81,6 +86,8 @@ wire sys_clk;
 wire sys_resetn;
 wire tpu_clk;
 wire tpu_resetn;
+wire sram_addr_clk;
+wire sram_sample_clk;
 wire pll_locked;
 
 generate if(SIMULATION) begin: sim_clk
@@ -94,6 +101,9 @@ generate if(SIMULATION) begin: sim_clk
     assign cpu_clk = clk_sim;
     assign sys_clk = clk;
     assign tpu_clk = sys_clk;
+    // Match the hardware SRAM address and input-sampling phases at 75 MHz.
+    assign #5.833 sram_addr_clk = sys_clk;
+    assign #9.167 sram_sample_clk = sys_clk;
     rst_sync u_rst_sys(
         .clk(sys_clk),
         .rst_n_in(~reset),
@@ -114,6 +124,8 @@ else begin: pll_clk
     clk_pll u_clk_pll(
         .cpu_clk    (cpu_clk),
         .sys_clk    (sys_clk),
+        .sram_addr_clk(sram_addr_clk),
+        .sram_sample_clk(sram_sample_clk),
         .resetn     (~reset),
         .locked     (pll_locked),
         .clk_in1    (clk)
@@ -757,8 +769,12 @@ AXI_top #(
 // 实例化 AXI 包装器以连接外部物理 SRAM (BaseRAM & ExtRAM, 连接至 S0 端口)
 //==================================================
 wire s0_axi_awvalid_gated = s0_axi_awvalid & s0_axi_wvalid;
-axi_wrap_ram_sp_ext u_axi_wrap_ram_sp_ext (
+axi_wrap_ram_sp_ext #(
+    .READ_WAIT_CYCLES(SRAM_READ_WAIT_CYCLES)
+) u_axi_wrap_ram_sp_ext (
     .aclk           (sys_clk        ),
+    .sram_addr_clk  (sram_addr_clk  ),
+    .sram_sample_clk(sram_sample_clk),
     .aresetn        (sys_resetn     ),
 
     // AXI AR Channel
@@ -849,8 +865,13 @@ wire uart0_dtr_o ;
 wire uart0_ri_i ;
     wire uart_tx_byte_valid;
     wire [7:0] uart_tx_byte_data;
+    wire uart_tx_50m_txd;
+    wire [7:0] uart_tx_fifo_dout;
+    wire       uart_tx_fifo_full;
+    wire       uart_tx_fifo_empty;
+    wire       uart_tx_fifo_rd_en;
     
-assign UART_TX = uart0_txd_o;
+    assign UART_TX = SIMULATION ? uart0_txd_o : uart_tx_50m_txd;
 //assign UART_RX = uart0_rxd_oe ? 1'bz : uart0_rxd_o ;
 //assign UART_TX = uart0_txd_oe ? 1'bz : uart0_txd_o ;
 assign UART_RTS = uart0_rts_o ;
@@ -928,6 +949,29 @@ assign uart0_ri_i = UART_RI ;
     .uart0_int (uart0_int ),
     .uart_tx_byte_valid(uart_tx_byte_valid),
     .uart_tx_byte_data (uart_tx_byte_data )
+);
+
+uart_byte_async_fifo u_uart_tx_fifo (
+    .rst   (reset | ~sys_resetn),
+    .wr_clk(sys_clk),
+    .rd_clk(clk),
+    .din   (uart_tx_byte_data),
+    .wr_en (uart_tx_byte_valid & ~uart_tx_fifo_full),
+    .rd_en (uart_tx_fifo_rd_en),
+    .dout  (uart_tx_fifo_dout),
+    .full  (uart_tx_fifo_full),
+    .empty (uart_tx_fifo_empty)
+);
+
+uart_tx_50m #(
+    .CLKS_PER_BIT(434)
+) u_uart_tx_50m (
+    .clk       (clk),
+    .rst_n     (~reset),
+    .fifo_data (uart_tx_fifo_dout),
+    .fifo_empty(uart_tx_fifo_empty),
+    .fifo_rd_en(uart_tx_fifo_rd_en),
+    .txd       (uart_tx_50m_txd)
 );
 
 // DVI is unused in the matmul benchmark build.
