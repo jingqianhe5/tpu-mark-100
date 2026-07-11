@@ -38,10 +38,6 @@ module clk_pll_clk_wiz (
     wire sys_clk_unbuf;
     wire sram_addr_clk_unbuf;
     wire sram_sample_clk_unbuf;
-    wire phase_clkfbout;
-    wire phase_clkfbout_buf;
-    wire main_locked;
-    wire phase_locked;
     MMCME2_ADV #(
         .BANDWIDTH            ("OPTIMIZED"),
         .CLKOUT4_CASCADE      ("FALSE"),
@@ -62,11 +58,11 @@ module clk_pll_clk_wiz (
         .CLKOUT1_DUTY_CYCLE   (0.500),
         .CLKOUT1_USE_FINE_PS  ("FALSE"),
         .CLKOUT2_DIVIDE       (10),
-        .CLKOUT2_PHASE        (247.500),
+        .CLKOUT2_PHASE        (229.500),
         .CLKOUT2_DUTY_CYCLE   (0.500),
         .CLKOUT2_USE_FINE_PS  ("FALSE"),
         .CLKOUT3_DIVIDE       (10),
-        .CLKOUT3_PHASE        (157.500),
+        .CLKOUT3_PHASE        (139.500),
         .CLKOUT3_DUTY_CYCLE   (0.500),
         .CLKOUT3_USE_FINE_PS  ("FALSE"),
         .CLKOUT4_DIVIDE       (1),
@@ -90,9 +86,9 @@ module clk_pll_clk_wiz (
         .CLKOUT0B             (),
         .CLKOUT1              (sys_clk_unbuf),
         .CLKOUT1B             (),
-        .CLKOUT2              (),
+        .CLKOUT2              (sram_sample_clk_unbuf),
         .CLKOUT2B             (),
-        .CLKOUT3              (),
+        .CLKOUT3              (sram_addr_clk_unbuf),
         .CLKOUT3B             (),
         .CLKOUT4              (),
         .CLKOUT5              (),
@@ -108,7 +104,7 @@ module clk_pll_clk_wiz (
         .DWE                  (1'b0),
         .DO                   (),
         .DRDY                 (),
-        .LOCKED               (main_locked),
+        .LOCKED               (locked),
         .CLKINSTOPPED         (),
         .CLKFBSTOPPED         (),
         .PSCLK                (1'b0),
@@ -133,93 +129,6 @@ module clk_pll_clk_wiz (
         .I (sys_clk_unbuf),
         .O (sys_clk)
     );
-
-    // The second MMCM is 1:1: its input and both outputs are 75 MHz.  It keeps
-    // the SRAM launch/sample phases derived from sys_clk for release projects
-    // whose supplied XDC still carries the legacy sys_clk period.
-    MMCME2_ADV #(
-        .BANDWIDTH            ("OPTIMIZED"),
-        .CLKOUT4_CASCADE      ("FALSE"),
-        .COMPENSATION         ("ZHOLD"),
-        .STARTUP_WAIT         ("FALSE"),
-        .DIVCLK_DIVIDE        (1),
-        .CLKFBOUT_MULT_F      (12.000),
-        .CLKFBOUT_PHASE       (0.000),
-        .CLKFBOUT_USE_FINE_PS ("FALSE"),
-        .CLKIN1_PERIOD        (13.333),
-        .CLKIN2_PERIOD        (10.000),
-        .CLKOUT0_DIVIDE_F     (12.000),
-        .CLKOUT0_PHASE        (247.500),
-        .CLKOUT0_DUTY_CYCLE   (0.500),
-        .CLKOUT0_USE_FINE_PS  ("FALSE"),
-        .CLKOUT1_DIVIDE       (12),
-        .CLKOUT1_PHASE        (157.500),
-        .CLKOUT1_DUTY_CYCLE   (0.500),
-        .CLKOUT1_USE_FINE_PS  ("FALSE"),
-        .CLKOUT2_DIVIDE       (1),
-        .CLKOUT2_PHASE        (0.000),
-        .CLKOUT2_DUTY_CYCLE   (0.500),
-        .CLKOUT2_USE_FINE_PS  ("FALSE"),
-        .CLKOUT3_DIVIDE       (1),
-        .CLKOUT3_PHASE        (0.000),
-        .CLKOUT3_DUTY_CYCLE   (0.500),
-        .CLKOUT3_USE_FINE_PS  ("FALSE"),
-        .CLKOUT4_DIVIDE       (1),
-        .CLKOUT4_PHASE        (0.000),
-        .CLKOUT4_DUTY_CYCLE   (0.500),
-        .CLKOUT4_USE_FINE_PS  ("FALSE"),
-        .CLKOUT5_DIVIDE       (1),
-        .CLKOUT5_PHASE        (0.000),
-        .CLKOUT5_DUTY_CYCLE   (0.500),
-        .CLKOUT5_USE_FINE_PS  ("FALSE"),
-        .CLKOUT6_DIVIDE       (1),
-        .CLKOUT6_PHASE        (0.000),
-        .CLKOUT6_DUTY_CYCLE   (0.500),
-        .CLKOUT6_USE_FINE_PS  ("FALSE"),
-        .REF_JITTER1          (0.010),
-        .REF_JITTER2          (0.010)
-    ) sram_phase_mmcm (
-        .CLKFBOUT             (phase_clkfbout),
-        .CLKFBOUTB            (),
-        .CLKOUT0              (sram_sample_clk_unbuf),
-        .CLKOUT0B             (),
-        .CLKOUT1              (sram_addr_clk_unbuf),
-        .CLKOUT1B             (),
-        .CLKOUT2              (),
-        .CLKOUT2B             (),
-        .CLKOUT3              (),
-        .CLKOUT3B             (),
-        .CLKOUT4              (),
-        .CLKOUT5              (),
-        .CLKOUT6              (),
-        .CLKFBIN              (phase_clkfbout_buf),
-        .CLKIN1               (sys_clk),
-        .CLKIN2               (1'b0),
-        .CLKINSEL             (1'b1),
-        .DADDR                (7'd0),
-        .DCLK                 (1'b0),
-        .DEN                  (1'b0),
-        .DI                   (16'd0),
-        .DWE                  (1'b0),
-        .DO                   (),
-        .DRDY                 (),
-        .LOCKED               (phase_locked),
-        .CLKINSTOPPED         (),
-        .CLKFBSTOPPED         (),
-        .PSCLK                (1'b0),
-        .PSEN                 (1'b0),
-        .PSINCDEC             (1'b0),
-        .PSDONE               (),
-        .PWRDWN               (1'b0),
-        .RST                  (~resetn | ~main_locked)
-    );
-
-    BUFG phase_clkf_buf (
-        .I (phase_clkfbout),
-        .O (phase_clkfbout_buf)
-    );
-
-    assign locked = main_locked & phase_locked;
 
     BUFG sram_sample_clk_buf (
         .I (sram_sample_clk_unbuf),

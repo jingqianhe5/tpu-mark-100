@@ -248,7 +248,7 @@ reg active_choose_sram;
 reg base_write_active;
 reg base_write_drive;
 reg [31:0] base_write_addr;
-// ExtRAM addresses launch at 157.5 degrees.  The 247.5-degree clock samples the
+// ExtRAM addresses launch at 139.5 degrees.  The 229.5-degree clock samples the
 // previous word 3.33 ns after the next address launch, inside the tAA/tOHA
 // data-valid window while retaining one word per 75 MHz cycle.
 (* KEEP = "TRUE" *) reg [19:0] ext_ram_addr_prepare_q;

@@ -102,8 +102,8 @@ generate if(SIMULATION) begin: sim_clk
     assign sys_clk = clk;
     assign tpu_clk = sys_clk;
     // Match the hardware SRAM address and input-sampling phases at 75 MHz.
-    assign #5.833 sram_addr_clk = sys_clk;
-    assign #9.167 sram_sample_clk = sys_clk;
+    assign #5.167 sram_addr_clk = sys_clk;
+    assign #8.500 sram_sample_clk = sys_clk;
     rst_sync u_rst_sys(
         .clk(sys_clk),
         .rst_n_in(~reset),
