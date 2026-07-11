@@ -246,12 +246,13 @@ axi2sram_sp_ext #(
 
 reg active_choose_sram;
 reg base_write_active;
-reg base_write_drive;
+(* IOB = "TRUE", DONT_TOUCH = "TRUE" *) reg [31:0] base_write_tristate_q;
 reg [31:0] base_write_addr;
-// ExtRAM addresses launch at 139.5 degrees.  The 229.5-degree clock samples the
-// previous word 3.33 ns after the next address launch, inside the tAA/tOHA
-// data-valid window while retaining one word per 75 MHz cycle.
-(* KEEP = "TRUE" *) reg [19:0] ext_ram_addr_prepare_q;
+wire [31:0] base_ram_data_in;
+// ExtRAM addresses launch from a sys_clk IOB register.  The 94.5-degree clock
+// samples the previous word just after the following sys_clk edge: the old
+// address has had a full cycle to satisfy tAA, and throughput remains one word
+// per 75 MHz cycle.
 (* IOB = "TRUE" *) reg [19:0] ext_ram_addr_q;
 (* IOB = "TRUE" *) reg [31:0] ext_ram_data_sample_q;
 wire ar_accept = ram_arvalid & ram_arready;
@@ -265,20 +266,20 @@ always @(posedge aclk or negedge aresetn) begin
     if (~aresetn) begin
         active_choose_sram <= 1'b0;
         base_write_active  <= 1'b0;
-        base_write_drive   <= 1'b0;
+        base_write_tristate_q <= {32{1'b1}};
         base_write_addr    <= 32'd0;
     end else if (ar_accept) begin
         active_choose_sram <= ram_araddr[22];
     end else if (aw_accept) begin
         active_choose_sram <= ram_awaddr[22];
         base_write_active  <= ~ram_awaddr[22];
-        base_write_drive   <= 1'b0;
+        base_write_tristate_q <= {32{1'b1}};
         base_write_addr    <= ram_awaddr;
     end else if (b_accept) begin
         base_write_active  <= 1'b0;
-        base_write_drive   <= 1'b0;
-    end else if (base_write_active && !base_write_drive) begin
-        base_write_drive   <= 1'b1;
+        base_write_tristate_q <= {32{1'b1}};
+    end else if (base_write_active && base_write_tristate_q[0]) begin
+        base_write_tristate_q <= 32'd0;
     end else if (base_write_active && soc_sram_we) begin
         base_write_addr    <= base_write_addr + 32'd4;
     end
@@ -286,11 +287,7 @@ end
 
 always @(posedge aclk) begin
     if (soc_sram_cs && !soc_sram_we && choose_sram)
-        ext_ram_addr_prepare_q <= soc_sram_addr[21:2];
-end
-
-always @(posedge sram_addr_clk) begin
-    ext_ram_addr_q <= ext_ram_addr_prepare_q;
+        ext_ram_addr_q <= soc_sram_addr[21:2];
 end
 
 // No reset is needed: read metadata remains empty during reset, so sampled bus
@@ -304,7 +301,23 @@ assign base_ram_be_n = 4'b0000;
 assign base_ram_ce_n = 1'b0;
 assign base_ram_oe_n = base_write_active;
 assign base_ram_we_n = ~soc_sram_we;
-assign base_ram_data = base_write_drive ? soc_sram_wdata : 32'hzzzzzzzz;
+genvar base_data_bit;
+generate
+    for (base_data_bit = 0; base_data_bit < 32; base_data_bit = base_data_bit + 1) begin : gen_base_data_obuf
+`ifdef VERILATOR
+        assign base_ram_data[base_data_bit] = base_write_tristate_q[base_data_bit] ?
+                                              1'bz : soc_sram_wdata[base_data_bit];
+        assign base_ram_data_in[base_data_bit] = base_ram_data[base_data_bit];
+`else
+        IOBUF base_data_iobuf (
+            .I(soc_sram_wdata[base_data_bit]),
+            .T(base_write_tristate_q[base_data_bit]),
+            .O(base_ram_data_in[base_data_bit]),
+            .IO(base_ram_data[base_data_bit])
+        );
+`endif
+    end
+endgenerate
 
 assign ext_ram_addr = ext_ram_addr_q;
 assign ext_ram_be_n = 4'b0000;
@@ -313,6 +326,6 @@ assign ext_ram_oe_n = 1'b0;
 assign ext_ram_we_n = 1'b1;
 assign ext_ram_data = 32'hzzzzzzzz;
 
-assign soc_sram_rdata = choose_sram ? ext_ram_data_sample_q : base_ram_data;
+assign soc_sram_rdata = choose_sram ? ext_ram_data_sample_q : base_ram_data_in;
 
 endmodule

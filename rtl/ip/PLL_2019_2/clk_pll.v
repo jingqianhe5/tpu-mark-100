@@ -36,7 +36,6 @@ module clk_pll_clk_wiz (
     wire clkfbout_buf;
     wire cpu_clk_unbuf;
     wire sys_clk_unbuf;
-    wire sram_addr_clk_unbuf;
     wire sram_sample_clk_unbuf;
     MMCME2_ADV #(
         .BANDWIDTH            ("OPTIMIZED"),
@@ -58,11 +57,11 @@ module clk_pll_clk_wiz (
         .CLKOUT1_DUTY_CYCLE   (0.500),
         .CLKOUT1_USE_FINE_PS  ("FALSE"),
         .CLKOUT2_DIVIDE       (10),
-        .CLKOUT2_PHASE        (229.500),
+        .CLKOUT2_PHASE        (94.500),
         .CLKOUT2_DUTY_CYCLE   (0.500),
         .CLKOUT2_USE_FINE_PS  ("FALSE"),
         .CLKOUT3_DIVIDE       (10),
-        .CLKOUT3_PHASE        (139.500),
+        .CLKOUT3_PHASE        (0.000),
         .CLKOUT3_DUTY_CYCLE   (0.500),
         .CLKOUT3_USE_FINE_PS  ("FALSE"),
         .CLKOUT4_DIVIDE       (1),
@@ -88,7 +87,7 @@ module clk_pll_clk_wiz (
         .CLKOUT1B             (),
         .CLKOUT2              (sram_sample_clk_unbuf),
         .CLKOUT2B             (),
-        .CLKOUT3              (sram_addr_clk_unbuf),
+        .CLKOUT3              (),
         .CLKOUT3B             (),
         .CLKOUT4              (),
         .CLKOUT5              (),
@@ -135,9 +134,6 @@ module clk_pll_clk_wiz (
         .O (sram_sample_clk)
     );
 
-    BUFG sram_addr_clk_buf (
-        .I (sram_addr_clk_unbuf),
-        .O (sram_addr_clk)
-    );
+    assign sram_addr_clk = sys_clk;
 
 endmodule
