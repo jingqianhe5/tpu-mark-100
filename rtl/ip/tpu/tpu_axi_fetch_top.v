@@ -93,8 +93,8 @@ module tpu_axi_fetch_top #(
         ST_WAIT_WRITES    = 6'd20, // 最后一组算完后等待后台 CRC 全部完成
         ST_COMPUTE_FILL   = 6'd21; // 内部流水乘法器填充拍，锁存 k=0 乘积并预装 k=2
 
-    // 后台预取状态机。它和主计算状态机共用同一套 AXI 读通道，
-    // 只在主状态机不发读请求时启动，用于把下一组 A/B 读入备用 buffer。
+    // 后台预取状态机。每个 AXI burst 连续读取 8 组（256 beat），每收到
+    // 32 beat 就发布一组并切换双缓冲，让 AXI 和计算状态机并行推进。
     localparam [1:0]
         BG_READ_IDLE = 2'd0, // 后台预取空闲
         BG_READ_AR   = 2'd1, // 后台预取发 AR
@@ -130,15 +130,17 @@ module tpu_axi_fetch_top #(
     reg [3:0]  store_elem_index; // 当前正在拆写的 C 元素索引，0..15
     reg [1:0]  store_word_sel;   // 当前 C 元素的第几个 32-bit word，0..2
     reg        compute_buf_sel;  // 0 选 mem0 计算，1 选 mem1 计算
-    reg        prefetch_buf_sel; // 后台预取写入的 buffer 选择
-    reg        prefetch_valid;   // 备用 buffer 是否已经装好下一组数据
-    reg        input_from_prefetch; // 当前组是否直接使用预取 buffer
+    reg        fill_buf_sel;     // AXI 生产端当前写入的输入 buffer
+    reg        consume_buf_sel;  // 计算消费端下一次读取的输入 buffer
+    reg [1:0]  input_buf_valid;  // 两个输入 buffer 各自的完整组有效标记
     reg [1:0]  bg_read_state;    // 后台预取读状态机
-    reg [5:0]  bg_read_index;    // 后台预取读 beat index，0..31
+    reg [7:0]  bg_read_index;    // 后台批量预取 beat index，0..255
     reg [31:0] bg_read_base;     // 后台预取目标组的输入基地址
+    reg [31:0] next_read_base;   // 下一批 8 组输入的起始地址
+    reg [12:0] fetch_groups_left; // 还未发起 AXI 读取的组数，5000 可由 13 bit 表示
 
-    // 双 buffer 保存输入矩阵。compute_buf_sel 指向当前计算用 buffer，
-    // prefetch_buf_sel 指向后台预取下一组时写入的 buffer。
+    // 双 buffer 保存输入矩阵。AXI 生产端和计算消费端各自维护选择指针；
+    // 生产端每填满 32 word 就切到另一块，读 burst 不需要停顿。
     // 每组 A/B 都是 4x4，按 32-bit 无符号整数存储。
     reg [31:0] a_mem0 [0:15]; // 输入 A 的 buffer0，保存 4x4 共 16 个 word
     reg [31:0] b_mem0 [0:15]; // 输入 B 的 buffer0，保存 4x4 共 16 个 word
@@ -223,10 +225,10 @@ module tpu_axi_fetch_top #(
     assign m_axi_awprot  = 3'b000;               // 普通非特权数据访问
     assign m_axi_wlast   = m_axi_wvalid && (bg_write_state == BG_WRITE_W) && (write_index == write_burst_len); // 当前 burst 最后一个 result word
 
-    // AXI 读通道只读 A/B 输入矩阵：
-    // arlen=31，一次 burst 读 32 个 word，也就是 128B。
+    // AXI 读通道只读 A/B 输入矩阵。5000 组正好是 625 批，每批 8 组、
+    // 256 beat、1024B；起始地址始终 1KB 对齐，因此不会跨越 4KB 边界。
     assign m_axi_arid    = {AXI_ID_WIDTH{1'b0}}; // 单 master 内部不区分 ID，固定 0
-    assign m_axi_arlen   = 8'd31;                  // 固定参数模式只读矩阵，每次 32 beat
+    assign m_axi_arlen   = 8'd255;                // 每次连续读取 8 组，共 256 beat
     assign m_axi_arsize  = 3'b010;               // 每 beat 4 字节
     assign m_axi_arburst = 2'b01;                // INCR burst，地址递增
     assign m_axi_arlock  = 1'b0;                 // 不使用锁
@@ -244,7 +246,8 @@ module tpu_axi_fetch_top #(
     wire [31:0] src_read_addr = current_group_src_base ; // 当前输入 word 地址
     wire read_burst_last = (read_index == 6'd31);  // 当前组输入 32 beat 是否读完
     wire main_read_done = read_burst_last;          // 主读完成条件别名
-    wire bg_read_done = (bg_read_index == 6'd31);   // 后台预取 32 beat 是否读完
+    wire bg_group_done = (bg_read_index[4:0] == 5'd31); // 当前 32-beat 输入组是否装满
+    wire bg_read_done = (bg_read_index == 8'd255);       // 当前 8 组批量读取是否完成
     wire [2:0] c_wr_queue_count =
         {2'd0, c_wr_valid[0]} + {2'd0, c_wr_valid[1]} +
         {2'd0, c_wr_valid[2]} + {2'd0, c_wr_valid[3]} +
@@ -254,7 +257,7 @@ module tpu_axi_fetch_top #(
     wire c_wr_head_valid = c_wr_valid[c_wr_head_sel]; // FIFO 头 buffer 是否有效
 
     wire [31:0] bg_src_read_addr = bg_read_base ;// 预取 word 地址
-    wire [3:0] bg_target_index = bg_read_index[3:0]; // 预取写入 A/B buffer 的 0..15 索引
+    wire [3:0] bg_target_index = bg_read_index[3:0]; // 当前组内 A/B buffer 的 0..15 索引
 
     // 6-cycle 流水并行矩阵乘法核心：
     // 先把某个 k 的 A 列/B 行锁进 mul_a*/mul_b*，下一拍 16 个乘法器同时出结果。
@@ -606,35 +609,24 @@ module tpu_axi_fetch_top #(
                 groups_left     <= groups_left - 32'd1; // 已完成一组计算，剩余组数减一
                 active_src_base <= active_src_base + 32'd128; // 下一组输入基地址前进 128B
                 active_dst_base <= active_dst_base + 32'd192; // 下一组输出基地址前进 192B
-                if (prefetch_valid) begin
-                    compute_buf_sel     <= prefetch_buf_sel; // 下一组直接使用已预取好的 buffer
-                    prefetch_buf_sel    <= ~prefetch_buf_sel; // 另一个 buffer 留给再下一组预取
-                    input_from_prefetch <= 1'b1; // 通知 GROUP_PREP 跳过主读
-                    prefetch_valid      <= 1'b0; // 消费掉这个预取 buffer
-                    state               <= ST_GROUP_PREP; // 继续下一组
-                end else if (bg_read_state != BG_READ_IDLE) begin
-                    input_from_prefetch <= 1'b0; // 预取未完成，先等它填满备用 buffer
-                    state               <= ST_INPUT_WAIT; // 等待下一组输入预取完成
-                end else begin
-                    input_from_prefetch <= 1'b0; // 没有预取数据，下一组走主读
-                    state               <= ST_GROUP_PREP; // 继续下一组
-                end
+                state <= ST_GROUP_PREP; // 由输入环形双缓冲决定直接计算还是等待
             end
         end
     endtask
 
-    // 只要后面还有组、并且备用 buffer 还没有有效数据，就可以预取下一组。
-    wire prefetch_needed = (groups_left > 32'd1) && !prefetch_valid; // 是否需要启动下一组预取
+    // 只要还有尚未发起读取的输入批次，并且备用 buffer 已被计算端消费，
+    // 就可以启动下一次 8 组连续 burst。
+    wire prefetch_needed = (fetch_groups_left != 13'd0);
 
     task start_prefetch_read;
         begin
-            // 后台预取下一组输入。因为只有一套 AXI 读通道，必须确认当前没有
-            // 主读请求和未消费的 R 数据，才启动预取 burst。
+            // 后台一次预取 8 组输入。因为只有一套 AXI 读通道，必须确认当前没有
+            // 未消费的 R 数据，才启动下一次 256-beat burst。
             if (prefetch_needed && (bg_read_state == BG_READ_IDLE) &&
                 !m_axi_arvalid && !m_axi_rvalid && !m_axi_rready) begin
                 bg_read_state     <= BG_READ_AR; // 后台状态切到发 AR
-                bg_read_index     <= 6'd0;       // 从下一组第 0 个 word 开始读
-                bg_read_base      <= active_src_base + 32'd128; // 下一组输入基地址
+                bg_read_index     <= 8'd0;       // 从本批第 0 个 word 开始读
+                bg_read_base      <= next_read_base; // 锁存本批输入基地址
             end
         end
     endtask
@@ -649,12 +641,16 @@ module tpu_axi_fetch_top #(
                     m_axi_arvalid <= 1'b0; // 地址被接受后撤销 AR valid
                     m_axi_rready  <= 1'b0; // 先等一拍再准备接收 R
                     bg_read_state <= BG_READ_WAIT; // 进入等待 R ready 阶段
+                    next_read_base <= next_read_base + 32'd1024; // 下一批前进 8 * 128B
+                    fetch_groups_left <= fetch_groups_left - 13'd8; // 本批 8 组已经发起
                 end
             end else if (bg_read_state == BG_READ_WAIT) begin
                 m_axi_rready  <= 1'b1; // 准备接收预取返回数据
                 bg_read_state <= BG_READ_R; // 进入 R 数据接收阶段
             end else if (bg_read_state == BG_READ_R) begin
-                m_axi_rready <= 1'b1; // 预取过程中持续接收 R beat
+                // 只在生产端即将写入的 buffer 尚未被占用时接收。计算速度高于
+                // SRAM 流速，稳态下两个 buffer 会交替流动而不拉低 RREADY。
+                m_axi_rready <= !input_buf_valid[fill_buf_sel];
                 if (m_axi_rvalid && m_axi_rready) begin
                     if (m_axi_rresp != 2'b00) begin
                         m_axi_rready <= 1'b0; // 错误时停止接收
@@ -663,30 +659,32 @@ module tpu_axi_fetch_top #(
                         done  <= 1'b1;        // 对 CPU 表示任务结束但有 error
                         state <= ST_HALT;     // 主状态机停机
                     end else begin
-                        // 预取返回的 32 个 word 写入备用 buffer：
-                        // 前 16 个是 A，后 16 个是 B。
-                        if (bg_read_index < 6'd16) begin
-                            if (!prefetch_buf_sel) begin
+                        // 每 32 个返回 word 构成一组：前 16 个是 A，后 16 个是 B。
+                        if (!bg_read_index[4]) begin
+                            if (!fill_buf_sel) begin
                                 a_mem0[bg_target_index] <= m_axi_rdata; // 写入 A buffer0
                             end else begin
                                 a_mem1[bg_target_index] <= m_axi_rdata; // 写入 A buffer1
                             end
                         end else begin
-                            if (!prefetch_buf_sel) begin
+                            if (!fill_buf_sel) begin
                                 b_mem0[bg_target_index] <= m_axi_rdata; // 写入 B buffer0
                             end else begin
                                 b_mem1[bg_target_index] <= m_axi_rdata; // 写入 B buffer1
                             end
                         end
-                        if (bg_read_done) begin
-                            bg_read_state  <= BG_READ_IDLE; // 32 beat 预取完成，回到空闲
-                            m_axi_rready   <= 1'b0;         // 不再接收 R
-                            prefetch_valid <= 1'b1;         // 标记备用 buffer 有效
+                        if (bg_group_done) begin
+                            input_buf_valid[fill_buf_sel] <= 1'b1; // 发布刚装满的一组
+                            fill_buf_sel <= ~fill_buf_sel; // 下一拍开始写另一块 buffer
+                            if (bg_read_done) begin
+                                bg_read_state <= BG_READ_IDLE; // 8 组 burst 全部完成
+                                m_axi_rready <= 1'b0;
+                            end else begin
+                                bg_read_index <= bg_read_index + 8'd1; // 指向下一组第 0 个 word
+                            end
                         end else begin
                             m_axi_rready  <= 1'b1; // 继续接收下一个 R beat
-                            if (bg_read_index != 6'd31) begin
-                                bg_read_index <= bg_read_index + 6'd1; // 推进预取 beat index
-                            end
+                            bg_read_index <= bg_read_index + 8'd1; // 推进批内 beat index
                         end
                     end
                 end
@@ -798,12 +796,14 @@ module tpu_axi_fetch_top #(
             store_elem_index <= 4'd0; // 清当前写回 C 元素索引
             store_word_sel   <= 2'd0; // 清当前 C 元素 word 选择
             compute_buf_sel  <= 1'b0; // 默认使用 buffer0 计算
-            prefetch_buf_sel <= 1'b1; // 默认使用 buffer1 做预取
-            prefetch_valid   <= 1'b0; // 复位后没有有效预取数据
-            input_from_prefetch <= 1'b0; // 复位后当前组不来自预取
+            fill_buf_sel     <= 1'b0; // 生产端从 buffer0 开始填充
+            consume_buf_sel  <= 1'b0; // 消费端从 buffer0 开始读取
+            input_buf_valid  <= 2'b00; // 复位后两个输入 buffer 均为空
             bg_read_state    <= BG_READ_IDLE; // 后台预取状态机空闲
-            bg_read_index    <= 6'd0; // 清后台预取 beat 索引
+            bg_read_index    <= 8'd0; // 清后台批量预取 beat 索引
             bg_read_base     <= 32'd0; // 清后台预取基地址
+            next_read_base   <= 32'd0; // 清下一批输入基地址
+            fetch_groups_left <= 13'd0; // 清尚未发起读取的组数
             c_wr_valid       <= 6'd0; // 写回队列清空
             c_wr_head_sel    <= 1'b0; // 写回 FIFO head 复位到 buffer0
             c_wr_tail_sel    <= 1'b0; // 写回 FIFO tail 复位到 buffer0
@@ -856,6 +856,9 @@ module tpu_axi_fetch_top #(
 
             infer_result_valid_low <= 2'b00; // 默认每拍清 valid，只在 REPORT 拉高低两 lane
             service_bg_write(); // 后台推进结果写回，与主读/计算重叠
+            if (bg_read_state != BG_READ_IDLE) begin
+                service_bg_read(); // AXI R 通道独立于主计算状态，每拍持续推进
+            end
 
             if (write_error_latched) begin
                 error <= 1'b1; // 后台写回报告错误
@@ -893,10 +896,12 @@ module tpu_axi_fetch_top #(
                         crc_pair_last   <= 1'b0; // 清 CRC 组尾 pair 标记
                         final_crc32_reg <= 32'd0; // 清最终 CRC
                         compute_buf_sel <= 1'b0; // 第一组使用 buffer0
-                        prefetch_buf_sel <= 1'b1; // 下一组预取到 buffer1
-                        prefetch_valid  <= 1'b0; // 刚启动时还没有预取
-                        input_from_prefetch <= 1'b0; // 第一组需要主读输入
+                        fill_buf_sel    <= 1'b0; // AXI 从 buffer0 开始生产
+                        consume_buf_sel <= 1'b0; // 计算从 buffer0 开始消费
+                        input_buf_valid <= 2'b00; // 启动时输入环为空
                         bg_read_state   <= BG_READ_IDLE; // 后台预取空闲
+                        next_read_base  <= FIXED_SRC_BASE; // 第一批从输入区起点读取
+                        fetch_groups_left <= 13'd5000; // 5000 组按 8 组一批发起
                         c_wr_valid      <= 6'd0; // 新任务清空写回队列
                         c_wr_head_sel   <= 1'b0; // 写回 FIFO head 回到 buffer0
                         c_wr_tail_sel   <= 1'b0; // 写回 FIFO tail 回到 buffer0
@@ -914,8 +919,8 @@ module tpu_axi_fetch_top #(
                 end
 
                 ST_GROUP_PREP: begin
-                    // 准备处理一组 4x4 matmul。若上一组计算时已经预取成功，
-                    // 这里直接切到计算；否则先走 AXI 读输入。
+                    // 准备处理一组 4x4 matmul。所有输入都由 8 组连续 burst
+                    // 填入双缓冲；若当前组尚未到达，就进入 INPUT_WAIT 服务读通道。
                     read_index    <= 6'd0; // 新组从输入 beat0 开始
                     compute_index <= 5'd0; // 新组从第 0 行开始算
                     row_idx       <= 2'd0; // 当前行清为 0
@@ -923,11 +928,16 @@ module tpu_axi_fetch_top #(
                     for (i = 0; i < 16; i = i + 1) begin
                         c_mem[i] <= 66'd0; // 清上一组 C 结果
                     end
-                    if (input_from_prefetch) begin
-                        input_from_prefetch <= 1'b0; // 消费掉预取标记
-                        state <= ST_COMPUTE_PREP; // 数据已经在 buffer 中，直接算
+                    if (input_buf_valid[consume_buf_sel]) begin
+                        compute_buf_sel <= consume_buf_sel; // 按生产顺序消费完整输入组
+                        input_buf_valid[consume_buf_sel] <= 1'b0; // 立即释放给生产端复用
+                        consume_buf_sel <= ~consume_buf_sel;
+                        state <= ST_COMPUTE_PREP;
                     end else begin
-                        state <= ST_READ_AR; // 没有预取数据，需要从 SRAM 主读
+                        if (bg_read_state == BG_READ_IDLE) begin
+                            start_prefetch_read(); // 首组或批次边界发起新的 256-beat burst
+                        end
+                        state <= ST_INPUT_WAIT;
                     end
                 end
 
@@ -1017,8 +1027,6 @@ module tpu_axi_fetch_top #(
                     // 同时如果 AXI 读通道空闲，会启动/推进下一组预取。
                     if (bg_read_state == BG_READ_IDLE) begin
                         start_prefetch_read(); // 后台空闲时尝试发起下一组输入预取
-                    end else begin
-                        service_bg_read(); // 后台已有预取任务时继续推进 AR/R 握手
                     end
                     compute_index <= 5'd0; // 调试/兼容计数清零，当前核心不再按行推进
                     row_idx       <= 2'd0; // 调试/兼容行号清零
@@ -1032,26 +1040,24 @@ module tpu_axi_fetch_top #(
                     // 同时把 k=1 操作数装入寄存器。最终 64-bit 乘积下一拍才有效。
                     if (bg_read_state == BG_READ_IDLE) begin
                         start_prefetch_read(); // 后台空闲时继续尝试启动下一组预取
-                    end else begin
-                        service_bg_read(); // 计算当前组的同时继续接收下一组预取数据
-`ifdef SIMULATION
-                        if (trace_matmul_prefetch && ((group_count_reg - groups_left) < 32'd2)) begin
-                            if (bg_read_state == BG_READ_AR) begin
-                                $display("[tpu_pf_ar] group=%0d idx=%0d addr=%08x",
-                                         group_count_reg - groups_left,
-                                         bg_read_index,
-                                         bg_src_read_addr);
-                            end
-                            if (bg_read_state == BG_READ_R && m_axi_rvalid && m_axi_rready) begin
-                                $display("[tpu_pf_r] group=%0d idx=%0d data=%08x rlast=%0b",
-                                         group_count_reg - groups_left,
-                                         bg_read_index,
-                                         m_axi_rdata,
-                                         m_axi_rlast);
-                            end
-                        end
-`endif
                     end
+`ifdef SIMULATION
+                    if (trace_matmul_prefetch && ((group_count_reg - groups_left) < 32'd2)) begin
+                        if (bg_read_state == BG_READ_AR) begin
+                            $display("[tpu_pf_ar] group=%0d idx=%0d addr=%08x",
+                                     group_count_reg - groups_left,
+                                     bg_read_index,
+                                     bg_src_read_addr);
+                        end
+                        if (bg_read_state == BG_READ_R && m_axi_rvalid && m_axi_rready) begin
+                            $display("[tpu_pf_r] group=%0d idx=%0d data=%08x rlast=%0b",
+                                     group_count_reg - groups_left,
+                                     bg_read_index,
+                                     m_axi_rdata,
+                                     m_axi_rlast);
+                        end
+                    end
+`endif
 
 `ifdef SIMULATION
                     if (trace_matmul_input && ((group_count_reg - groups_left) < 32'd2)) begin
@@ -1091,8 +1097,6 @@ module tpu_axi_fetch_top #(
                     // 保持乘法器从 k=1 到 k=2 连续推进。
                     if (bg_read_state == BG_READ_IDLE) begin
                         start_prefetch_read();
-                    end else begin
-                        service_bg_read();
                     end
                     mul_r00 <= mul_p00; mul_r01 <= mul_p01; mul_r02 <= mul_p02; mul_r03 <= mul_p03;
                     mul_r10 <= mul_p10; mul_r11 <= mul_p11; mul_r12 <= mul_p12; mul_r13 <= mul_p13;
@@ -1108,8 +1112,6 @@ module tpu_axi_fetch_top #(
                     // 同一拍还可以锁存当前操作数对应的乘积，并预装下一轮操作数。
                     if (bg_read_state == BG_READ_IDLE) begin
                         start_prefetch_read(); // 累加拍也保持下一组预取
-                    end else begin
-                        service_bg_read(); // 累加当前组的同时继续接收下一组预取数据
                     end
 
 `ifdef SIMULATION
@@ -1166,9 +1168,6 @@ module tpu_axi_fetch_top #(
                     // 计算结果已经在 c_mem 中稳定。这里延后一拍再入 CRC buffer，
                     // 避免最后一次乘加组合路径直接打到 c_wr_mem，改善 sys_clk 时序。
                     // 如果 CRC buffer 都满了，就继续等待后台 CRC 释放一个 buffer。
-                    if (bg_read_state != BG_READ_IDLE) begin
-                        service_bg_read(); // 等输出 buffer 时也继续服务未完成的输入预取
-                    end
                     if (!c_wr_queue_full) begin
                         enqueue_c_mem_result(); // 把稳定的当前组 C 放入刚释放的 CRC buffer
                         advance_after_result_enqueue(); // 继续下一组或等待所有写回完成
@@ -1176,19 +1175,11 @@ module tpu_axi_fetch_top #(
                 end
 
                 ST_INPUT_WAIT: begin
-                    // 当前组已经入写队列，但下一组输入预取还没完成。
-                    // 这里持续接收 R beat，直到备用输入 buffer 变满。
-                    if (prefetch_valid) begin
-                        compute_buf_sel     <= prefetch_buf_sel; // 下一组使用刚预取完成的 buffer
-                        prefetch_buf_sel    <= ~prefetch_buf_sel; // 另一个 buffer 留给再下一组
-                        input_from_prefetch <= 1'b1; // GROUP_PREP 跳过主读
-                        prefetch_valid      <= 1'b0; // 消费预取数据
-                        state               <= ST_GROUP_PREP; // 进入下一组准备
-                    end else if (bg_read_state != BG_READ_IDLE) begin
-                        service_bg_read(); // 继续推进预取 AR/R 握手
-                    end else begin
-                        input_from_prefetch <= 1'b0; // 没有预取任务，下一组走主读
-                        state               <= ST_GROUP_PREP; // 进入下一组准备
+                    // 等待消费指针指向的下一组完整到达；R 通道由全局服务逻辑推进。
+                    if (input_buf_valid[consume_buf_sel]) begin
+                        state <= ST_GROUP_PREP;
+                    end else if (bg_read_state == BG_READ_IDLE) begin
+                        start_prefetch_read(); // 上一批结束后立即发起下一批
                     end
                 end
 
@@ -1244,10 +1235,12 @@ module tpu_axi_fetch_top #(
                         crc_pair_last   <= 1'b0; // 清 CRC 组尾 pair 标记
                         final_crc32_reg <= 32'd0; // 清最终 CRC
                         compute_buf_sel <= 1'b0; // 第一组使用 buffer0
-                        prefetch_buf_sel <= 1'b1; // 下一组预取到 buffer1
-                        prefetch_valid  <= 1'b0; // 刚启动时还没有预取
-                        input_from_prefetch <= 1'b0; // 第一组需要主读输入
+                        fill_buf_sel    <= 1'b0; // AXI 从 buffer0 开始生产
+                        consume_buf_sel <= 1'b0; // 计算从 buffer0 开始消费
+                        input_buf_valid <= 2'b00; // 启动时输入环为空
                         bg_read_state   <= BG_READ_IDLE; // 后台预取空闲
+                        next_read_base  <= FIXED_SRC_BASE; // 第一批从输入区起点读取
+                        fetch_groups_left <= 13'd5000; // 5000 组按 8 组一批发起
                         c_wr_valid      <= 6'd0; // 新任务清空写回队列
                         c_wr_head_sel   <= 1'b0; // 写回 FIFO head 回到 buffer0
                         c_wr_tail_sel   <= 1'b0; // 写回 FIFO tail 回到 buffer0

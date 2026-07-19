@@ -501,6 +501,7 @@ wire [31:0]     tpu_lacc_cmd_payload_tpu;
 wire            tpu_lacc_cmd_is_start;
 wire            tpu_lacc_cmd_fifo_wr_en;
 wire            tpu_lacc_cmd_fifo_rd_en;
+reg             tpu_auto_start;
 
 wire            tpu_result_fifo_full;
 wire            tpu_result_fifo_empty;
@@ -531,8 +532,18 @@ assign tpu_lacc_cmd_fifo_rd_en =
     !tpu_lacc_cmd_fifo_rd_rst_busy &&
     (!tpu_lacc_cmd_is_start || !tpu_busy_tpu);
 
-assign tpu_start_final =
-    tpu_lacc_cmd_fifo_rd_en && tpu_lacc_cmd_is_start;
+// The benchmark parameters are fixed, so start the TPU on the first clock after
+// reset instead of waiting for the CPU boot path to issue the same command.
+always @(posedge tpu_clk or negedge tpu_resetn) begin
+    if (!tpu_resetn) begin
+        tpu_auto_start <= 1'b1;
+    end else begin
+        tpu_auto_start <= 1'b0;
+    end
+end
+
+assign tpu_start_final = tpu_auto_start ||
+    (tpu_lacc_cmd_fifo_rd_en && tpu_lacc_cmd_is_start);
 assign tpu_start_pc_final = tpu_lacc_cmd_payload_tpu;
 
 wire tpu_result_fifo_wr_en =

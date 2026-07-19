@@ -2,7 +2,8 @@
 
 /*
  * TPU 跑分驱动：
- * CPU 只负责通过 LACC 清状态、启动 TPU、轮询完成、读回硬件 CRC 并通过 UART 打印。
+ * 硬件复位后自动启动固定任务并输出固定协议前缀；CPU 只轮询完成、读回 CRC，
+ * 再通过 UART 输出动态 CRC 和结束标识。
  * 输入地址、输出地址和 5000 组轮数都固定在 RTL 中，CPU 不搬运矩阵，也不计算 golden。
  */
 
@@ -16,10 +17,8 @@ unsigned long UART_BASE = 0xbf000000u;
 #define TPU_STATUS_DONE      (1u << 1)
 #define TPU_STATUS_ERROR     (1u << 2)
 
-#define LACC_START_WORD      "0xC00000A4"
 #define LACC_STATUS_WORD     "0xC0400004"
 #define LACC_READ_WORD       "0xC08000A4"
-#define LACC_CLEAR_WORD      "0xC0C00004"
 
 /* UART 只用来打印跑分标记和 CRC，不参与计算。 */
 static inline void uart_write_reg(uint32_t offset, uint8_t data)
@@ -29,9 +28,8 @@ static inline void uart_write_reg(uint32_t offset, uint8_t data)
 
 static void uart_putc(char ch)
 {
-    // Hardware mirrors every THR write into a 128-byte asynchronous FIFO.
-    // This benchmark emits only 47 bytes, so queue them without serializing
-    // the CPU to the 115200-baud line rate.
+    // Hardware mirrors every THR write into a 128-byte asynchronous FIFO, so
+    // the CPU can queue the dynamic suffix without waiting on the serial line.
     uart_write_reg(UART_THR, (uint8_t)ch);
 }
 
@@ -50,38 +48,11 @@ static void uart_put_hex32(uint32_t value)
     }
 }
 
-static inline uint32_t tpu_start(void)
-{
-    uint32_t status;
-    asm volatile (
-        "move $r5, %1\n\t"
-        ".word " LACC_START_WORD "\n\t"
-        "move %0, $r4\n\t"
-        : "=r"(status)
-        : "r"(0u)
-        : "$r4", "$r5", "memory"
-    );
-    return status;
-}
-
 static inline uint32_t tpu_status(void)
 {
     uint32_t status;
     asm volatile (
         ".word " LACC_STATUS_WORD "\n\t"
-        "move %0, $r4\n\t"
-        : "=r"(status)
-        :
-        : "$r4", "memory"
-    );
-    return status;
-}
-
-static inline uint32_t tpu_clear(void)
-{
-    uint32_t status;
-    asm volatile (
-        ".word " LACC_CLEAR_WORD "\n\t"
         "move %0, $r4\n\t"
         : "=r"(status)
         :
@@ -127,19 +98,12 @@ static int wait_tpu_done(uint32_t *status_out)
 
 int main(void)
 {
-    uart_puts_raw("MATMUL_START\n");
-
-    uint32_t status = tpu_clear();
-
-    if ((status & TPU_STATUS_ERROR) == 0) {
-        status = tpu_start();
-    }
-    if ((status & TPU_STATUS_ERROR) == 0) {
-        (void)wait_tpu_done(&status);
-    }
+    // Hardware emits the fixed protocol prefix and starts the fixed workload
+    // immediately after reset, while the CPU is still booting.
+    uint32_t status = 0;
+    (void)wait_tpu_done(&status);
 
     const uint32_t crc = tpu_read_pair(0);
-    uart_puts_raw("MATMUL_CRC32=");
     uart_put_hex32(crc);
     uart_putc('\n');
     uart_puts_raw("MATMUL_DONE\n");

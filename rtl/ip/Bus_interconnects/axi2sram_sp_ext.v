@@ -106,7 +106,9 @@ module axi2sram_sp_ext #(
     localparam [AXI_ADDR_WIDTH-1:0] ADDR_STEP = {{(AXI_ADDR_WIDTH-LOG_NR_BYTES-1){1'b0}}, 1'b1, {LOG_NR_BYTES{1'b0}}};
     
     reg [AXI_ADDR_WIDTH-1:0] req_addr_d, req_addr_q;
-    reg [7:0]                cnt_d, cnt_q;
+    // AXI ARLEN/AWLEN encode beats - 1, so ARLEN=255 requires a counter that
+    // can represent the terminal value 256.
+    reg [8:0]                cnt_d, cnt_q;
     reg [1:0]                read_valid_pipe_q;
     reg [1:0]                read_last_pipe_q;
     reg [3:0]                read_wait_d, read_wait_q;
@@ -133,7 +135,7 @@ module axi2sram_sp_ext #(
         {3'd0, read_valid_pipe_q[1]} -
         {3'd0, read_pop};
     wire read_can_issue =
-        (state_q == READ) && (cnt_q < ax_req_q_len + 8'd1) &&
+        (state_q == READ) && (cnt_q < {1'b0, ax_req_q_len} + 9'd1) &&
         (read_outstanding_after_pop < 4'd4) &&
         (read_fast_bank || (read_wait_q == 4'd0));
 
@@ -217,7 +219,7 @@ module axi2sram_sp_ext #(
                     // save the address
                     req_addr_d     = get_next_addr(s_araddr, s_arburst);
                     // save the ar_len
-                    cnt_d          = 1;
+                    cnt_d          = 9'd1;
                 // ------------
                 // Write
                 // ------------
@@ -253,7 +255,7 @@ module axi2sram_sp_ext #(
                     be_o           = s_wstrb;
                     req_addr_d     = get_next_addr(ax_req_q_addr, ax_req_q_burst);
                     state_d        = (s_wlast) ? SEND_B : WRITE;
-                    cnt_d          = 1;
+                    cnt_d          = 9'd1;
                 end
             end
 
@@ -265,13 +267,13 @@ module axi2sram_sp_ext #(
                     req_o               = 1'b1;
                     read_addr_d         = req_addr_q;
                     read_issue          = 1'b1;
-                    read_issue_last     = (cnt_q == ax_req_q_len);
+                    read_issue_last     = (cnt_q == {1'b0, ax_req_q_len});
                     read_wait_d         = read_fast_bank ? 4'd0 :
                                           READ_WAIT_CYCLES[3:0];
                     req_addr_d          = get_next_addr(req_addr_q, ax_req_q_burst);
-                    cnt_d               = cnt_q + 1;
+                    cnt_d               = cnt_q + 9'd1;
                 end
-                if ((cnt_q == ax_req_q_len + 8'd1) &&
+                if ((cnt_q == {1'b0, ax_req_q_len} + 9'd1) &&
                     (read_valid_pipe_q == 2'b00) &&
                     ((read_fifo_count_q == 3'd0) ||
                      ((read_fifo_count_q == 3'd1) && read_pop))) begin
@@ -341,7 +343,7 @@ module axi2sram_sp_ext #(
             ax_req_q_len    <= 8'h0;
             ax_req_q_size   <= 3'h0;
             req_addr_q      <= 'h0;
-            cnt_q           <= 8'h0;
+            cnt_q           <= 9'd0;
             read_valid_pipe_q   <= 2'b00;
             read_last_pipe_q    <= 2'b00;
             read_wait_q         <= 4'd0;
