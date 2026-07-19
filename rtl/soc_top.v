@@ -980,6 +980,8 @@ uart_tx_50m #(
 ) u_uart_tx_50m (
     .clk       (clk),
     .rst_n     (~reset),
+    .result_valid(tpu_done_tpu),
+    .result_crc32(tpu_infer_result_data_tpu[31:0]),
     .fifo_data (uart_tx_fifo_dout),
     .fifo_empty(uart_tx_fifo_empty),
     .fifo_rd_en(uart_tx_fifo_rd_en),
