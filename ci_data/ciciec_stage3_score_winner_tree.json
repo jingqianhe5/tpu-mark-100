@@ -1,0 +1,23 @@
+{
+  "current_winner": null,
+  "generated_at": "2026-07-19 23:54:18 +0800",
+  "ineligible_results": [
+    {
+      "reason": "success_ci_evidence_missing",
+      "score": 100.0,
+      "source": "frontend_platform_auto",
+      "status": "Finished",
+      "submitted_at": "2026-07-19 23:53:44",
+      "task_id": 7889,
+      "version": "53fb418e"
+    }
+  ],
+  "leaderboard": [],
+  "policy": {
+    "eligible": "Finished evaluator result with successful GitLab CI evidence",
+    "winner": "highest score wins; score ties prefer earlier submission"
+  },
+  "schema_version": 1,
+  "unscored_strategy_candidates": [],
+  "winner_tree": []
+}
